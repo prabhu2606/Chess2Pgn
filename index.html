@@ -15,7 +15,7 @@
   <body>
     <header class="nav">
       <div class="container nav__content">
-        <div class="logo">Chess2Pgn</div>
+        <a href="#demo" class="logo logo--link">Chess2Pgn</a>
         <nav class="nav__links">
           <a href="#demo">Demo</a>
           <a href="#features">Features</a>
@@ -40,13 +40,14 @@
         <div class="container hero__content">
           <div class="hero__text">
             <h1>
-                Convert Chess Score Sheets to PGNs - Fast and Easy
+                Scoresheets to PGNs<br />
+                In Seconds.
             </h1>
             <p>
               Upload photos of your handwritten chess score sheets and instantly convert them into clean, editable PGN files.
             </p>
             <div class="hero__actions">
-              <a class="btn" href="#cta">Get Started</a>
+              <a class="btn" href="convert.html">Get Started</a>
             </div>
             <div class="hero__trust">
               <div class="trust__stat">
@@ -240,7 +241,7 @@
                 <li>Live PGN editor</li>
                 <li>Download PGN & share link</li>
               </ul>
-              <a class="btn" href="#cta">Get Started</a>
+              <a class="btn" href="convert.html">Get Started</a>
             </article>
             <article class="card">
               <h3>Pro</h3>
@@ -354,26 +355,45 @@
       </section>
 
       <section class="section section--cta" id="cta">
-        <div class="container cta">
-          <div class="cta__text">
-            <h2>Ready To Turn Scores Into Strategy?</h2>
-            <p>
-              Upload your first sheet and experience AI-assisted PGN conversion
-              built for serious chess improvement.
+        <div class="container contact">
+          <div class="contact__form-wrapper">
+            <h2 class="contact__title">Contact Us</h2>
+            <p class="contact__instruction">
+              You can reach us anytime via
+              <a href="mailto:support@chess2pgn.com" class="contact__email"
+                >support@chess2pgn.com</a
+              >
             </p>
-          </div>
-          <form class="cta__form">
-            <label for="email">Get early access to new features</label>
-            <div class="cta__input">
+            <form class="contact__form">
               <input
+                type="text"
+                id="name"
+                name="name"
+                class="contact__input"
+                placeholder="Your name"
+                required
+              />
+              <input
+                type="email"
                 id="email"
                 name="email"
-                type="email"
-                placeholder="you@example.com"
+                class="contact__input"
+                placeholder="Email address"
+                required
               />
-              <button type="submit" class="btn">Notify Me</button>
-            </div>
-          </form>
+              <textarea
+                id="message"
+                name="message"
+                class="contact__textarea"
+                placeholder="Message (issues, suggestions, questions, or, just saying Hi)"
+                rows="6"
+                required
+              ></textarea>
+              <button type="submit" class="btn contact__submit">
+                Send a message
+              </button>
+            </form>
+          </div>
         </div>
       </section>
     </main>
@@ -405,6 +425,83 @@
         links.classList.toggle("open");
         actions.classList.toggle("open");
       });
+
+      // Smooth scroll for anchor links
+      document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+          const href = this.getAttribute('href');
+          if (href === '#' || href === '#signin' || href === '#signup') return;
+          
+          e.preventDefault();
+          const target = document.querySelector(href);
+          if (target) {
+            const headerOffset = 80;
+            const elementPosition = target.getBoundingClientRect().top;
+            const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+
+            window.scrollTo({
+              top: offsetPosition,
+              behavior: 'smooth'
+            });
+          }
+        });
+      });
+
+      // Intersection Observer for scroll-triggered animations
+      const observerOptions = {
+        threshold: 0.1,
+        rootMargin: '0px 0px -50px 0px'
+      };
+
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('animate-in');
+            observer.unobserve(entry.target);
+          }
+        });
+      }, observerOptions);
+
+      // Observe elements for scroll animations
+      const animateElements = document.querySelectorAll('.section, .workflow__card, .pricing__grid > .card, .faq__items > details');
+      animateElements.forEach(el => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(30px)';
+        el.style.transition = 'opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), transform 0.6s cubic-bezier(0.4, 0, 0.2, 1)';
+        observer.observe(el);
+      });
+
+      // Add animate-in class styles dynamically
+      const style = document.createElement('style');
+      style.textContent = `
+        .animate-in {
+          opacity: 1 !important;
+          transform: translateY(0) !important;
+        }
+      `;
+      document.head.appendChild(style);
+
+      // Add subtle parallax effect to hero section on scroll
+      window.addEventListener('scroll', () => {
+        const currentScroll = window.pageYOffset;
+        const hero = document.querySelector('.hero__visual');
+        const nav = document.querySelector('.nav');
+        
+        // Parallax effect
+        if (hero && currentScroll < window.innerHeight * 1.5) {
+          const parallax = currentScroll * 0.15;
+          hero.style.transform = `translateX(0) translateY(${parallax}px)`;
+        }
+        
+        // Nav shadow on scroll
+        if (nav) {
+          if (currentScroll > 50) {
+            nav.classList.add('scrolled');
+          } else {
+            nav.classList.remove('scrolled');
+          }
+        }
+      }, { passive: true });
     </script>
   </body>
 </html>

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Convert | Chess2Pgn</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="container nav__content">
+        <a href="index.html#demo" class="logo logo--link">Chess2Pgn</a>
+        <nav class="nav__links">
+          <a href="index.html#demo">Demo</a>
+          <a href="index.html#features">Features</a>
+          <a href="index.html#workflow">How it Works</a>
+          <a href="index.html#pricing">Pricing</a>
+          <a href="index.html#cta">Contact</a>
+        </nav>
+        <div class="nav__actions">
+          <a class="btn btn--ghost" href="#signin">Sign In</a>
+          <a class="btn" href="#signup">Sign Up</a>
+        </div>
+        <button class="nav__toggle" aria-label="Toggle navigation">
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="convert-section">
+        <div class="container">
+          <div class="stepper">
+            <div class="stepper__step stepper__step--active">
+              <div class="stepper__circle">
+                <span class="stepper__number">1</span>
+              </div>
+              <div class="stepper__label">Upload</div>
+            </div>
+            <div class="stepper__step">
+              <div class="stepper__circle">
+                <span class="stepper__number">2</span>
+              </div>
+              <div class="stepper__label">Moves</div>
+            </div>
+            <div class="stepper__step">
+              <div class="stepper__circle">
+                <span class="stepper__number">3</span>
+              </div>
+              <div class="stepper__label">Info</div>
+            </div>
+            <div class="stepper__step">
+              <div class="stepper__circle">
+                <span class="stepper__number">4</span>
+              </div>
+              <div class="stepper__label">Done</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const toggle = document.querySelector(".nav__toggle");
+      const links = document.querySelector(".nav__links");
+      const actions = document.querySelector(".nav__actions");
+
+      toggle.addEventListener("click", () => {
+        toggle.classList.toggle("active");
+        links.classList.toggle("open");
+        actions.classList.toggle("open");
+      });
+
+      // Nav shadow on scroll
+      window.addEventListener('scroll', () => {
+        const currentScroll = window.pageYOffset;
+        const nav = document.querySelector('.nav');
+        
+        if (nav) {
+          if (currentScroll > 50) {
+            nav.classList.add('scrolled');
+          } else {
+            nav.classList.remove('scrolled');
+          }
+        }
+      }, { passive: true });
+    </script>
+  </body>
+</html>
+
