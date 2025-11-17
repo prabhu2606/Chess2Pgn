@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-white text-contrast font-sans;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4 {
+    @apply text-contrast m-0;
+    line-height: 1.2;
+  }
+
+  a {
+    @apply no-underline text-inherit;
+  }
+}
+
+@layer utilities {
+  .container {
+    @apply w-full max-w-[1120px] mx-auto px-[4vw];
+  }
+}
+

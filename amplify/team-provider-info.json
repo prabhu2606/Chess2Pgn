@@ -1,0 +1,29 @@
+{
+  "dev": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-chess2pgn-dev-11eb0-authRole",
+      "UnauthRoleArn": "arn:aws:iam::592939812917:role/amplify-chess2pgn-dev-11eb0-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::592939812917:role/amplify-chess2pgn-dev-11eb0-authRole",
+      "Region": "ap-south-1",
+      "DeploymentBucketName": "amplify-chess2pgn-dev-11eb0-deployment",
+      "UnauthRoleName": "amplify-chess2pgn-dev-11eb0-unauthRole",
+      "StackName": "amplify-chess2pgn-dev-11eb0",
+      "StackId": "arn:aws:cloudformation:ap-south-1:592939812917:stack/amplify-chess2pgn-dev-11eb0/d7fbff60-c131-11f0-b905-0accce77d997",
+      "AmplifyAppId": "d1u26kklvjkuor"
+    },
+    "categories": {
+      "auth": {
+        "chess2pgnd9ba8545": {}
+      },
+      "function": {
+        "S3Triggerc8c93dc4": {
+          "deploymentBucketName": "amplify-chess2pgn-dev-11eb0-deployment",
+          "s3Key": "amplify-builds/S3Triggerc8c93dc4-666d3655674939516b48-build.zip"
+        }
+      },
+      "storage": {
+        "chessstorage": {}
+      }
+    }
+  }
+}
