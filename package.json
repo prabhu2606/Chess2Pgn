@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "cleanup:s3:list": "node scripts/cleanup-s3.js --list",
+    "cleanup:s3:stats": "node scripts/cleanup-s3.js --stats",
+    "cleanup:s3:old": "node scripts/cleanup-s3.js --delete-older-than 7",
+    "cleanup:s3:all": "node scripts/cleanup-s3.js --delete-all"
   },
   "dependencies": {
     "@aws-amplify/storage": "^5.9.16",
