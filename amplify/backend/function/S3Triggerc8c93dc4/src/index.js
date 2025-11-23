@@ -1,4 +1,5 @@
 const AWS = require('aws-sdk');
+const { correctOCRErrors } = require('./chess-validator');
 
 // Initialize AWS services with explicit region configuration for optimal performance
 const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'ap-south-1';
@@ -42,23 +43,24 @@ exports.handler = async (event) => {
       };
     }
 
-    // Configure Textract parameters - using synchronous API for fast processing
+    // Configure Textract parameters - using analyzeDocument with TABLES feature only for cost optimization
     const textractParams = {
       Document: {
         S3Object: {
           Bucket: bucket,
           Name: key
         }
-      }
+      },
+      FeatureTypes: ['TABLES']  // Strictly TABLES only - excludes FORMS/QUERIES to save cost
     };
 
-    // Call Textract - synchronous API returns results in 1-3 seconds typically
-    console.log('🔍 Starting Textract OCR...', { bucket, key });
+    // Call Textract analyzeDocument API - optimized for table structure extraction
+    console.log('🔍 Starting Textract OCR with TABLES feature...', { bucket, key });
     const textractStartTime = Date.now();
     
     let textractData;
     try {
-      textractData = await textract.detectDocumentText(textractParams).promise();
+      textractData = await textract.analyzeDocument(textractParams).promise();
     } catch (textractError) {
       console.error('❌ Textract API error:', {
         error: textractError.message,
@@ -83,11 +85,75 @@ exports.handler = async (event) => {
     }
     
     const textractDuration = Date.now() - textractStartTime;
+    const originalBlocksCount = textractData.Blocks?.length || 0;
     console.log(`✅ Textract completed in ${textractDuration}ms`, {
-      blocksCount: textractData.Blocks?.length || 0
+      originalBlocksCount
     });
 
-    // Save results to S3
+    // Filter blocks to only TABLE and CELL types for cost optimization
+    // This reduces data size and processing overhead by excluding LINE, WORD, PAGE, etc.
+    const filteredBlocks = (textractData.Blocks || []).filter(
+      block => block.BlockType === 'TABLE' || block.BlockType === 'CELL'
+    );
+
+    // Update response to only include filtered table blocks
+    textractData.Blocks = filteredBlocks;
+    
+    const filteredBlocksCount = filteredBlocks.length;
+    console.log(`📊 Block filtering: ${originalBlocksCount} total blocks → ${filteredBlocksCount} table blocks (TABLE/CELL only)`, {
+      originalBlocksCount,
+      filteredBlocksCount,
+      filteredPercent: originalBlocksCount > 0 ? ((filteredBlocksCount / originalBlocksCount) * 100).toFixed(1) + '%' : '0%'
+    });
+
+    // Extract, validate, and correct chess moves using fuzzy matching
+    console.log('♟️ Starting chess move validation and OCR correction...');
+    const validationStartTime = Date.now();
+    
+    let validationResult;
+    try {
+      validationResult = correctOCRErrors(filteredBlocks);
+      
+      const validationDuration = Date.now() - validationStartTime;
+      console.log(`✅ Move validation completed in ${validationDuration}ms`, {
+        totalMoves: validationResult.stats.total,
+        validMoves: validationResult.stats.valid,
+        correctedMoves: validationResult.stats.corrected,
+        invalidMoves: validationResult.stats.invalid,
+        correctionRate: validationResult.stats.total > 0 
+          ? ((validationResult.stats.corrected / validationResult.stats.total) * 100).toFixed(1) + '%'
+          : '0%'
+      });
+      
+      if (validationResult.corrections.length > 0) {
+        console.log('📝 Corrections made:', validationResult.corrections.slice(0, 10).map(c => 
+          c.corrected ? `${c.original} → ${c.corrected}` : `${c.original} (invalid)`
+        ));
+      }
+    } catch (validationError) {
+      console.error('⚠️ Chess validation error (continuing without validation):', {
+        error: validationError.message,
+        stack: validationError.stack
+      });
+      // Continue without validation if there's an error
+      validationResult = {
+        originalMoves: [],
+        correctedMoves: [],
+        corrections: [],
+        stats: { total: 0, valid: 0, corrected: 0, invalid: 0 }
+      };
+    }
+
+    // Enhance results with validated and corrected moves
+    textractData.chessValidation = {
+      originalMoves: validationResult.originalMoves,
+      correctedMoves: validationResult.correctedMoves,
+      corrections: validationResult.corrections,
+      stats: validationResult.stats,
+      timestamp: new Date().toISOString()
+    };
+
+    // Save filtered results to S3 (only TABLE and CELL blocks + validation results)
     const resultKey = `results/${key}.json`;
     console.log('💾 Saving results to S3:', { bucket, resultKey });
     
@@ -115,7 +181,10 @@ exports.handler = async (event) => {
       resultKey,
       textractDuration,
       totalDuration,
-      blocksCount: textractData.Blocks?.length || 0
+      originalBlocksCount,
+      filteredBlocksCount: textractData.Blocks?.length || 0,
+      movesValidated: validationResult.stats.total,
+      movesCorrected: validationResult.stats.corrected
     });
 
     return { 
@@ -123,7 +192,10 @@ exports.handler = async (event) => {
       body: JSON.stringify({ 
         message: 'Processing complete',
         duration: totalDuration,
-        blocksCount: textractData.Blocks?.length || 0,
+        originalBlocksCount,
+        filteredBlocksCount: textractData.Blocks?.length || 0,
+        movesValidated: validationResult.stats.total,
+        movesCorrected: validationResult.stats.corrected,
         resultKey
       })
     };

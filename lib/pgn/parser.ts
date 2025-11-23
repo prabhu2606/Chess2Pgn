@@ -4,6 +4,7 @@
 
 export interface TextractBlock {
   BlockType: string
+  Id?: string
   Text?: string
   Geometry?: {
     BoundingBox: {
@@ -14,6 +15,15 @@ export interface TextractBlock {
     }
   }
   Confidence?: number
+  // Table-specific fields
+  RowIndex?: number
+  ColumnIndex?: number
+  RowSpan?: number
+  ColumnSpan?: number
+  Relationships?: Array<{
+    Type: string
+    Ids: string[]
+  }>
 }
 
 export interface TextractResponse {
@@ -22,8 +32,26 @@ export interface TextractResponse {
 
 /**
  * Extract all text from Textract response, ordered by position
+ * Supports both LINE blocks (legacy) and CELL blocks (table structure)
  */
 export function extractTextFromTextract(response: TextractResponse): string {
+  // First, try to extract from table structure (CELL blocks) if available
+  const cellBlocks = response.Blocks.filter(
+    (block) => block.BlockType === 'CELL' && block.Text
+  )
+
+  if (cellBlocks.length > 0) {
+    // Extract from table cells, sorted by row and column
+    cellBlocks.sort((a, b) => {
+      const rowDiff = (a.RowIndex || 0) - (b.RowIndex || 0)
+      if (rowDiff !== 0) return rowDiff
+      return (a.ColumnIndex || 0) - (b.ColumnIndex || 0)
+    })
+
+    return cellBlocks.map((block) => block.Text).join(' ')
+  }
+
+  // Fallback to LINE blocks for legacy compatibility
   const textBlocks = response.Blocks.filter(
     (block) => block.BlockType === 'LINE' && block.Text
   )
@@ -43,6 +71,83 @@ export function extractTextFromTextract(response: TextractResponse): string {
   })
 
   return textBlocks.map((block) => block.Text).join(' ')
+}
+
+/**
+ * Extract chess moves from table cells (optimized for table structure)
+ * Extracts moves from CELL blocks, ignoring header/metadata rows (typically row 0)
+ */
+export function extractMovesFromTable(response: TextractResponse): string[] {
+  const cellBlocks = response.Blocks.filter(
+    (block) => block.BlockType === 'CELL' && block.Text && block.RowIndex !== undefined
+  )
+
+  if (cellBlocks.length === 0) {
+    return []
+  }
+
+  // Filter out header row (row 0) and other metadata rows
+  // Typically, move data starts from row 1 or row 2
+  // We'll skip rows that contain common header text patterns
+  const headerPatterns = [
+    /^(move|round|white|black|result|date|event|tournament|site|player)/i,
+    /^\d+\s*$/,  // Just row numbers
+    /^[-=\s]+$/   // Separators
+  ]
+
+  const isHeaderCell = (text: string): boolean => {
+    return headerPatterns.some(pattern => pattern.test(text.trim()))
+  }
+
+  // Group cells by row
+  const rows: { [rowIndex: number]: TextractBlock[] } = {}
+  cellBlocks.forEach(cell => {
+    const rowIndex = cell.RowIndex || 0
+    if (!rows[rowIndex]) {
+      rows[rowIndex] = []
+    }
+    rows[rowIndex].push(cell)
+  })
+
+  // Extract moves from non-header rows
+  const moves: string[] = []
+  const sortedRowIndices = Object.keys(rows)
+    .map(Number)
+    .sort((a, b) => a - b)
+
+  for (const rowIndex of sortedRowIndices) {
+    const rowCells = rows[rowIndex]
+      .sort((a, b) => (a.ColumnIndex || 0) - (b.ColumnIndex || 0))
+
+    // Skip header rows (row 0 or rows where all cells match header patterns)
+    const rowText = rowCells.map(cell => cell.Text || '').join(' ').trim()
+    
+    if (rowIndex === 0 || rowCells.every(cell => isHeaderCell(cell.Text || ''))) {
+      continue
+    }
+
+    // Extract move notation from cells in this row
+    // Move notation pattern: matches chess moves like "1. e4 e5", "1.e4", etc.
+    const movePattern = /(\d+\.?\s*[a-h1-8NBRQKx=+#O-]+\s*[a-h1-8NBRQKx=+#O-]*)/gi
+    const rowMatches = rowText.match(movePattern)
+    
+    if (rowMatches) {
+      moves.push(...rowMatches.map(match => match.trim()))
+    } else {
+      // If no move pattern found, try each cell individually
+      rowCells.forEach(cell => {
+        const cellText = (cell.Text || '').trim()
+        if (cellText && !isHeaderCell(cellText)) {
+          const cellMatches = cellText.match(movePattern)
+          if (cellMatches) {
+            moves.push(...cellMatches.map(match => match.trim()))
+          }
+        }
+      })
+    }
+  }
+
+  return moves
 }
 
 /**
@@ -108,6 +213,7 @@ export function extractMetadata(text: string): GameMetadata {
 
 /**
  * Parse full Textract response and extract chess game data
+ * Optimized for table structure (TABLE/CELL blocks) but supports legacy LINE blocks
  */
 export interface ParsedChessGame {
   rawText: string
@@ -119,23 +225,50 @@ export interface ParsedChessGame {
 export function parseTextractResponse(
   response: TextractResponse
 ): ParsedChessGame {
-  const rawText = extractTextFromTextract(response)
-  const moves = extractChessMoves(rawText)
-  const metadata = extractMetadata(rawText)
-
-  // Calculate average confidence
-  const textBlocks = response.Blocks.filter(
-    (block) => block.BlockType === 'LINE' && block.Confidence
+  // Check if we have table structure (TABLE/CELL blocks)
+  const hasTableStructure = response.Blocks.some(
+    block => block.BlockType === 'TABLE' || block.BlockType === 'CELL'
   )
-  const avgConfidence =
-    textBlocks.reduce((sum, block) => sum + (block.Confidence || 0), 0) /
-    textBlocks.length
+
+  let moves: string[]
+  let rawText: string
+  let confidenceBlocks: TextractBlock[]
+
+  if (hasTableStructure) {
+    // Use table-based extraction (optimized for cost - ignores header/metadata)
+    moves = extractMovesFromTable(response)
+    rawText = extractTextFromTextract(response) // Will use CELL blocks
+    
+    // Calculate confidence from CELL blocks only (not headers)
+    confidenceBlocks = response.Blocks.filter(
+      (block) => block.BlockType === 'CELL' && 
+                 block.Confidence !== undefined &&
+                 block.RowIndex !== undefined &&
+                 block.RowIndex > 0  // Exclude row 0 (header)
+    )
+  } else {
+    // Fallback to legacy LINE-based extraction
+    rawText = extractTextFromTextract(response)
+    moves = extractChessMoves(rawText)
+    confidenceBlocks = response.Blocks.filter(
+      (block) => block.BlockType === 'LINE' && block.Confidence
+    )
+  }
+
+  // Calculate average confidence from relevant blocks
+  const avgConfidence = confidenceBlocks.length > 0
+    ? confidenceBlocks.reduce((sum, block) => sum + (block.Confidence || 0), 0) / confidenceBlocks.length
+    : 0
+
+  // Extract metadata (if needed, but typically ignored per requirement #2)
+  // For cost optimization, we skip metadata extraction from headers
+  const metadata: GameMetadata = {}
 
   return {
     rawText,
     moves,
-    metadata,
-    confidence: avgConfidence || 0,
+    metadata,  // Empty by default - ignores header/metadata per requirement
+    confidence: avgConfidence,
   }
 }
 

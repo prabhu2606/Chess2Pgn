@@ -11,9 +11,11 @@ A modern, responsive web application for converting chess score sheets to PGN fo
 - 🎯 TypeScript for type safety
 - 🎨 Tailwind CSS for styling
 - ☁️ AWS Amplify backend integration
-- 🔍 Amazon Textract OCR processing
-- 📦 S3 storage for images and results
+- 🔍 Amazon Textract OCR processing (optimized table structure extraction)
+- ♟️ Smart chess move validation with fuzzy matching (corrects OCR errors)
+- 📦 S3 storage for images and results with automatic cleanup
 - ⚙️ Serverless Lambda processing
+- 💰 Cost optimization features (lifecycle policies, cleanup scripts)
 
 ## Getting Started
 
@@ -41,7 +43,8 @@ Quick setup steps:
 6. Initialize Amplify in project: `amplify init`
 7. Add storage: `amplify add storage`
 8. Add Lambda function: `amplify add function`
-9. Deploy: `amplify push`
+9. Configure S3 lifecycle policy: `amplify override storage` (select storage resource)
+10. Deploy: `amplify push`
 
 ### Installation
 
@@ -70,7 +73,7 @@ npm run dev
 # or
 yarn dev
 # or
-pnpm dev
+pnpm dev 
 ```
 
 4. Open [http://localhost:3000](http://localhost:3000) in your browser.
@@ -116,10 +119,23 @@ chess2pgn/
 │   └── utils.ts            # Utility functions
 ├── amplify/
 │   └── backend/
-│       └── function/
-│           └── textractProcessor/  # Lambda function for OCR
+│       ├── function/
+│       │   └── S3Triggerc8c93dc4/  # Lambda function for Textract OCR
+│       │       ├── src/
+│       │       │   ├── index.js         # Main Lambda handler
+│       │       │   └── chess-validator.js  # Chess move validation & fuzzy matching
+│       │       └── package.json          # Includes chess.js dependency
+│       └── storage/
+│           └── chessstorage/
+│               └── overrides.ts     # S3 lifecycle policy configuration
+├── scripts/
+│   ├── cleanup-s3.js       # S3 cleanup utility script
+│   ├── setup-cost-monitoring.sh  # Cost monitoring setup script
+│   └── README.md            # Scripts documentation
 ├── docs/
 │   └── AWS_SETUP.md        # AWS setup instructions
+├── COST_OPTIMIZATION.md    # Comprehensive cost optimization guide
+├── COST_OPTIMIZATION_SUMMARY.md  # Quick cost optimization reference
 └── public/                 # Static assets
 ```
 
@@ -131,9 +147,10 @@ chess2pgn/
 - **Animations**: Framer Motion
 - **Font**: Poppins (Google Fonts)
 - **Backend**: AWS Amplify
-- **Storage**: Amazon S3
-- **OCR**: Amazon Textract
+- **Storage**: Amazon S3 (with lifecycle policies for automatic cleanup)
+- **OCR**: Amazon Textract (Tables mode with FeatureTypes=['TABLES'] only)
 - **Compute**: AWS Lambda
+- **Chess Validation**: chess.js (JavaScript chess library for move validation)
 
 ## Customization
 
@@ -186,19 +203,183 @@ Make sure to set the following environment variables in your deployment:
 
 1. **Upload**: User uploads a chess score sheet image
 2. **Storage**: Image is stored in S3 via Amplify Storage
-3. **Trigger**: S3 upload triggers Lambda function
-4. **OCR**: Lambda calls Amazon Textract to extract text
-5. **Processing**: Lambda parses text and stores results in S3
-6. **Retrieval**: Frontend polls API to get processing results
-7. **Conversion**: Extracted text is converted to PGN format
-8. **Display**: User can review and download the PGN file
+3. **Trigger**: S3 upload triggers Lambda function automatically
+4. **OCR**: Lambda calls Amazon Textract `analyzeDocument` with `FeatureTypes=['TABLES']` to extract table structure
+5. **Filtering**: Lambda filters response to only TABLE and CELL blocks (optimized for cost)
+6. **Validation**: Lambda validates and corrects chess moves using fuzzy matching:
+   - Extracts moves from table cells
+   - Validates each move using chess.js
+   - Corrects common OCR errors (e.g., "eH" → "e4", "o-o" → "0-0")
+   - Handles illegal moves with fuzzy matching algorithm
+7. **Storage**: Filtered table data + validated moves are stored in S3 as JSON results
+8. **Retrieval**: Frontend polls API to get processing results
+9. **Parsing**: Parser uses validated/corrected moves from results
+10. **Conversion**: Validated moves are converted to PGN format
+11. **Display**: User can review and download the PGN file
+
+### Textract Optimization
+
+The Lambda function is optimized for cost by:
+- Using `analyzeDocument` with **only** `FeatureTypes=['TABLES']` (excludes FORMS/QUERIES)
+- Filtering response blocks to only TABLE and CELL types (reduces data size)
+- Ignoring header/metadata rows when extracting moves
+
+### OCR Error Correction
+
+The Lambda function includes intelligent chess move validation and error correction:
+- **Chess Validation**: Uses chess.js to validate move legality
+- **Fuzzy Matching**: Automatically corrects common OCR errors:
+  - `eH` → `e4` (H mistaken for 4)
+  - `eb` → `e6` (b mistaken for 6)
+  - `cl` → `c1` (l mistaken for 1)
+  - `o-o` → `0-0` (castling notation)
+  - And many more common OCR confusions
+- **Error Handling**: Tracks original moves, corrections, and validation statistics
+- **Results**: Stores both original OCR moves and corrected moves in results JSON
 
 ## AWS Services Used
 
 - **AWS Amplify**: Backend-as-a-Service platform
-- **Amazon S3**: Object storage for images and results
-- **AWS Lambda**: Serverless function for OCR processing
-- **Amazon Textract**: OCR service for text extraction
+- **Amazon S3**: Object storage for images and results (with 7-day lifecycle policy for automatic cleanup)
+- **AWS Lambda**: Serverless function for OCR processing and chess move validation
+- **Amazon Textract**: OCR service with Tables mode (`analyzeDocument` with `FeatureTypes=['TABLES']`)
+- **chess.js**: JavaScript chess library for move validation and fuzzy matching
+
+## Cost Optimization
+
+**Important for Paid Plans**: The cost estimates below show actual costs for users on paid AWS plans. Free tier benefits (where applicable) are noted separately. If you're past the free tier period, you'll pay the actual costs listed.
+
+This project includes several cost optimization features:
+
+### Automatic Cleanup
+- **S3 Lifecycle Policy**: Automatically deletes files older than 7 days (configured via Amplify Overrides)
+- **Location**: `amplify/backend/storage/chessstorage/overrides.ts`
+- **To Apply**: Run `amplify override storage`, then `amplify push`
+
+### Manual Cleanup Scripts
+Cleanup utilities for managing S3 bucket:
+
+```bash
+# List all files in bucket
+npm run cleanup:s3:list
+
+# Show bucket statistics and cost estimate
+npm run cleanup:s3:stats
+
+# Delete files older than 7 days
+npm run cleanup:s3:old
+
+# Delete all files (requires confirmation)
+npm run cleanup:s3:all
+```
+
+See `scripts/README.md` for detailed usage instructions.
+
+### Cost Monitoring
+- **Setup Script**: `scripts/setup-cost-monitoring.sh` - Guides through AWS billing alert setup
+- **Documentation**: See `COST_OPTIMIZATION.md` for comprehensive cost strategies
+- **Quick Reference**: See `COST_OPTIMIZATION_SUMMARY.md` for key points
+
+### Textract Cost Optimization
+- Uses Tables mode with **only** TABLES feature ($15.00/1k pages vs $65.00/1k if FORMS+QUERIES included)
+- Filters blocks to only TABLE/CELL types (reduces data transfer and storage)
+- Processes only structured table data, ignoring headers/metadata
+- **Free Tier**: First 1,000 pages/month are FREE for first 3 months (new AWS accounts only)
+- **Paid Plan**: All pages are charged at $15.00 per 1,000 pages
+
+### Lambda Cost Optimization
+- Chess validation using chess.js adds minimal processing overhead (~100-500ms per document)
+- **Free Tier**: First 1M requests/month are FREE (permanent free tier, not time-limited)
+- **Paid Plan**: If exceeding 1M requests, costs are ~$0.20 per 1M requests after free tier
+- Package size increase from chess.js (~150KB) is negligible
+- **Typical Development**: Usually within free tier limits, so no Lambda costs
+
+### Estimated Monthly Costs (Paid Plan)
+
+**Note on Free Tier**: Free tier benefits apply only to new AWS accounts. If you're on a paid plan (past free tier period), you'll pay the actual costs listed below.
+
+#### Light Usage (100 pages/month):
+- **Textract**: ~$1.50 (100 pages @ $0.015/page)
+- **S3 Storage**: ~$0.02 (< 1 GB typical)
+- **S3 Requests**: FREE (< 2,000 PUT, 20,000 GET free tier)
+- **Lambda**: FREE (< 1M requests/month free tier)
+- **Total**: **~$1.52/month**
+
+#### Moderate Usage (1,000 pages/month):
+- **Textract**: ~$15.00 (1,000 pages @ $0.015/page)
+- **S3 Storage**: ~$0.10 (few GB after lifecycle cleanup)
+- **S3 Requests**: FREE
+- **Lambda**: FREE
+- **Total**: **~$15.10/month**
+
+#### Heavy Usage (5,000 pages/month):
+- **Textract**: ~$75.00 (5,000 pages @ $0.015/page)
+- **S3 Storage**: ~$0.50
+- **S3 Requests**: FREE
+- **Lambda**: FREE (still within free tier)
+- **Total**: **~$75.50/month**
+
+#### Free Tier Benefits (New AWS Accounts Only):
+- **Textract**: First 1,000 pages/month FREE for first 3 months
+- **S3**: 5 GB storage FREE for first 12 months
+- **Lambda**: 1M requests/month FREE (permanent, not time-limited)
+
+**Main Cost Driver**: Textract at $15.00 per 1,000 pages. All other services typically remain within free tier for development usage.
+
+For detailed cost optimization strategies and cost breakdowns, see [COST_OPTIMIZATION.md](COST_OPTIMIZATION.md).
+
+## Chess Move Validation & OCR Error Correction
+
+Handwriting OCR is never 100% accurate. Textract may mistake handwritten notation, such as:
+- `0-0` (castling) → `o-o` or `20-20`
+- `e4` → `eH`
+- `e6` → `eb`
+- `Rc1` → `Rcl`
+
+This application includes intelligent error correction:
+
+### How It Works
+
+1. **Move Extraction**: Lambda extracts moves from table cells after OCR processing
+2. **Validation**: Each move is validated using chess.js to ensure it's legal
+3. **Fuzzy Matching**: If a move is invalid, the system generates candidate moves by:
+   - Substituting common OCR confusion characters (H→4, b→6, l→1, o→0)
+   - Testing each candidate for validity
+   - Selecting the first valid move found
+4. **Results Storage**: Both original and corrected moves are stored in results JSON
+
+### Example Corrections
+
+```
+Original (OCR)    →  Corrected (Valid)
+──────────────────────────────────────
+eH                →  e4
+eb                →  e6
+cl                →  c1
+o-o               →  0-0
+O-O               →  0-0
+Rcl               →  Rc1
+```
+
+### Results Structure
+
+The processed results include:
+- `originalMoves`: Moves as extracted from OCR
+- `correctedMoves`: Validated and corrected moves
+- `corrections`: Array of corrections with metadata
+- `stats`: Validation statistics (total, valid, corrected, invalid)
+
+This ensures that even with imperfect OCR, the resulting PGN files are accurate and valid.
+
+## Additional Documentation
+
+- **[AWS Setup Guide](docs/AWS_SETUP.md)**: Detailed instructions for setting up AWS services
+- **[Cost Optimization Guide](COST_OPTIMIZATION.md)**: Comprehensive guide for minimizing AWS costs
+- **[Cost Optimization Summary](COST_OPTIMIZATION_SUMMARY.md)**: Quick reference for cost optimization
+- **[Scripts Documentation](scripts/README.md)**: Usage guide for utility scripts
+- **[Enable Textract](ENABLE_TEXTRACT.md)**: Instructions for enabling Textract service
+- **[Troubleshooting Upload](TROUBLESHOOTING_UPLOAD.md)**: Solutions for common upload issues
+- **[Debug Lambda](DEBUG_LAMBDA.md)**: Guide for debugging Lambda function issues
 
 ## License
 

@@ -5,9 +5,9 @@ This guide provides strategies to minimize AWS costs while developing the Chess2
 ## Current AWS Services & Cost Breakdown
 
 ### Services Used
-1. **Amazon Textract** - OCR processing (~$1.50 per 1,000 pages after free tier)
+1. **Amazon Textract** - OCR processing with Tables mode (~$15.00 per 1,000 pages after free tier)
 2. **Amazon S3** - Object storage for images and results
-3. **AWS Lambda** - Serverless function processing
+3. **AWS Lambda** - Serverless function processing (includes chess.js for move validation)
 4. **AWS Amplify** - Backend-as-a-Service
 5. **Amazon Cognito** - Authentication
 
@@ -21,11 +21,28 @@ This guide provides strategies to minimize AWS costs while developing the Chess2
 
 ### 1. Textract Cost Control (Highest Priority)
 
-**Cost Impact**: ~$1.50 per 1,000 pages = $0.0015 per page
+**IMPORTANT**: Textract pricing varies significantly based on the API method used.
+
+**Cost Impact by API Mode**:
+- **Raw Text Mode** (`detectDocumentText`): $1.50 per 1,000 pages = $0.0015 per page
+  - Lower cost but doesn't extract table structure
+  - Not suitable for chess score sheets with tables
+  
+- **Tables Mode** (`analyzeDocument` with `FeatureTypes=['TABLES']`): **$15.00 per 1,000 pages = $0.015 per page**
+  - **10x more expensive** than Raw Text
+  - **Current implementation uses this mode**
+  - Required for chess score sheets with table structure
+  - Optimized to use only TABLES feature (excludes FORMS/QUERIES to save cost)
+  
+- **Forms + Tables Mode**: $65.00 per 1,000 pages
+  - Highest cost tier (not used - would be 4x more expensive than current)
+
+**Current Implementation**: Uses Tables mode with **only** `FeatureTypes=['TABLES']`, which costs $15.00/1k pages. This is optimized compared to Forms+Tables ($65.00/1k pages) but 10x more expensive than Raw Text mode.
 
 #### Strategies:
 - ✅ **Use Free Tier Wisely**: First 1,000 pages/month are free for 3 months
 - ✅ **Monitor Usage**: Set up billing alerts (see section 5)
+- ✅ **Current API Mode**: Uses Tables mode with `FeatureTypes=['TABLES']` only (excludes FORMS/QUERIES to save cost)
 - ✅ **Optimize Image Sizes**: Smaller images = fewer Textract pages
   - Images are processed page-by-page
   - Reduce image resolution for test uploads
@@ -35,10 +52,19 @@ This guide provides strategies to minimize AWS costs while developing the Chess2
 - ✅ **Batch Testing**: Test with multiple images in one session, then clean up
 
 #### Calculate Textract Costs:
+
+**Tables Mode** (current implementation):
 ```
-Pages processed × $0.0015 = Cost
-Example: 5,000 pages = $7.50/month
+Pages processed × $0.015 = Cost
+Example: 5,000 pages = $75.00/month
 ```
+
+**Cost Comparison**:
+- **Raw Text Mode**: $1.50/1k pages (not used - doesn't support table structure)
+- **Tables Mode** (current): $15.00/1k pages ✅
+- **Forms + Tables Mode**: $65.00/1k pages (not used - would be 4x more expensive)
+
+**Current Implementation**: Uses Tables mode with only TABLES feature, which is optimized compared to Forms+Tables but 10x more expensive than Raw Text. This is necessary for chess score sheets with table structure.
 
 ### 2. S3 Storage Optimization
 
@@ -52,6 +78,10 @@ Example: 5,000 pages = $7.50/month
 - Applied to all files in the bucket
 - Reduces storage costs automatically
 - Prevents accumulation of test files
+- **Implementation**: Uses Amplify Overrides (in `amplify/backend/storage/chessstorage/overrides.ts`)
+- **To Apply**: Run `amplify override storage` (select `chessstorage`), then `amplify push`
+
+**IMPORTANT**: The lifecycle policy is configured via Amplify Overrides, which is the correct way to customize auto-generated CloudFormation templates. Files in the `build/` directory are overwritten by Amplify.
 
 #### Manual Cleanup Scripts:
 - Run `scripts/cleanup-s3.js` to manually delete old files
@@ -59,7 +89,7 @@ Example: 5,000 pages = $7.50/month
 
 #### Best Practices:
 - ✅ Delete test files immediately after processing
-- ✅ Use S3 lifecycle policy (configured in CloudFormation)
+- ✅ Use S3 lifecycle policy (configured via Amplify Overrides)
 - ✅ Monitor bucket size regularly
 - ✅ Empty bucket when not actively developing
 
@@ -72,7 +102,16 @@ Example: 5,000 pages = $7.50/month
 #### Optimization:
 - ✅ Current usage is minimal - Lambda costs are negligible
 - ✅ Function already optimized for quick execution
-- ✅ Textract processing is the main compute cost (via Lambda)
+- ✅ Textract API calls are the main cost (not Lambda execution)
+- ✅ Chess validation (chess.js) adds minimal overhead - still within free tier
+
+#### Additional Processing:
+- **Chess Move Validation**: Uses chess.js library for move validation and OCR error correction
+- **Impact**: Adds ~100-500ms processing time per document
+- **Cost Impact**: Negligible - still well within Lambda free tier (1M requests/month free)
+- **Package Size**: chess.js adds ~150KB to Lambda package (still well under limits)
+
+**Note**: Lambda processing costs are typically free for development. The main cost driver is Textract API usage, not Lambda execution time.
 
 ### 4. Development Best Practices
 
@@ -175,26 +214,30 @@ aws ce get-cost-and-usage \
 
 ### 8. Estimated Monthly Costs (Development)
 
+**Note**: Current implementation uses Tables mode with `FeatureTypes=['TABLES']` only, which costs $15.00/1k pages. This is necessary for chess score sheets with table structure.
+
 #### Light Development (Testing 100 images/month):
-- **Textract**: ~$0.15 (100 pages @ $0.0015/page) - or FREE if within free tier
+- **Textract (Tables mode)**: ~$1.50 (100 pages @ $0.015/page) - or **FREE** if within free tier (first 1,000 pages/month for 3 months)
 - **S3 Storage**: FREE (< 5 GB)
 - **S3 Requests**: FREE (< 2,000 PUT, 20,000 GET)
-- **Lambda**: FREE (< 1M invocations)
-- **Total**: ~$0.15/month or FREE
+- **Lambda**: FREE (< 1M invocations, includes chess.js validation)
+- **Total**: ~$1.50/month or **FREE**
 
 #### Moderate Development (Testing 1,000 images/month):
-- **Textract**: ~$1.50 (1,000 pages) - or FREE if within free tier
+- **Textract (Tables mode)**: ~$15.00 (1,000 pages) - or **FREE** if within free tier
 - **S3 Storage**: ~$0.10 (few GB after lifecycle cleanup)
 - **S3 Requests**: FREE
-- **Lambda**: FREE
-- **Total**: ~$1.60/month or FREE
+- **Lambda**: FREE (validation processing negligible)
+- **Total**: ~$15.10/month or **FREE**
 
 #### Heavy Development (Testing 5,000+ images/month):
-- **Textract**: ~$7.50 (5,000 pages)
+- **Textract (Tables mode)**: ~$75.00 (5,000 pages)
 - **S3 Storage**: ~$0.50
 - **S3 Requests**: FREE
-- **Lambda**: FREE
-- **Total**: ~$8.00/month
+- **Lambda**: FREE (still within free tier)
+- **Total**: ~$75.50/month
+
+**Current Implementation**: Uses Tables mode pricing ($15.00/1k pages). First 1,000 pages/month are **FREE** for 3 months. Lambda costs (including chess.js validation) remain **FREE** for development usage.
 
 ### 9. Emergency Cost Control
 
@@ -221,7 +264,8 @@ If you notice unexpected charges:
 ## Cost Optimization Checklist
 
 ### Initial Setup:
-- [x] S3 lifecycle policy configured (7-day expiration)
+- [x] S3 lifecycle policy configured via Amplify Overrides (7-day expiration)
+- [x] Run `amplify override storage` to apply lifecycle policy
 - [ ] Billing alerts configured
 - [ ] Cost monitoring dashboard setup
 - [ ] Cleanup scripts created

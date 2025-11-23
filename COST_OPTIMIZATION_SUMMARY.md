@@ -5,15 +5,22 @@ This document summarizes the cost optimization measures implemented to minimize 
 ## ✅ Implemented Features
 
 ### 1. S3 Lifecycle Policy (Automatic Cleanup)
-**Location**: `amplify/backend/storage/chessstorage/build/cloudformation-template.json`
+**Location**: `amplify/backend/storage/chessstorage/overrides.ts`
 
 - **Automatically deletes files older than 7 days**
 - Prevents accumulation of test files
 - Reduces storage costs without manual intervention
 - Also cleans up incomplete multipart uploads after 1 day
 
+**IMPORTANT**: Uses Amplify Overrides (correct approach). The build directory CloudFormation templates are auto-generated and will be overwritten by Amplify.
+
 **To Apply Changes**:
 ```bash
+# First time setup - run this to configure the override
+amplify override storage
+# Select the storage resource: chessstorage
+
+# Then push the changes
 amplify push
 ```
 
@@ -81,7 +88,7 @@ Complete documentation for all utility scripts, including:
 
 ### Before Optimization:
 - **S3 Storage**: Files accumulate indefinitely → potentially $0.50-5.00/month
-- **Textract**: Still $1.50 per 1,000 pages (unchanged, but now easier to monitor)
+- **Textract**: Using Tables mode ($15.00/1k pages) - necessary for table structure extraction
 
 ### After Optimization:
 - **S3 Storage**: Files auto-deleted after 7 days → ~$0.10-0.50/month
@@ -98,9 +105,14 @@ Complete documentation for all utility scripts, including:
 
 1. **Apply S3 Lifecycle Policy**:
    ```bash
+   # First, configure the override (if not already done)
+   amplify override storage
+   # Select: chessstorage
+   
+   # Then push the changes
    amplify push
    ```
-   This will update your S3 bucket with the lifecycle policy.
+   This will update your S3 bucket with the lifecycle policy using Amplify Overrides.
 
 2. **Set Up Billing Alerts** (Recommended):
    - Go to: https://console.aws.amazon.com/billing/home#/preferences
@@ -127,15 +139,17 @@ Complete documentation for all utility scripts, including:
 
 ## 📝 Important Notes
 
-1. **Lifecycle Policy**: Takes effect immediately after `amplify push`. Files older than 7 days will be deleted automatically.
+1. **Lifecycle Policy**: Uses Amplify Overrides (in `overrides.ts`), which is the correct way to customize auto-generated CloudFormation templates. Takes effect after `amplify override storage` and `amplify push`. Files older than 7 days will be deleted automatically.
 
 2. **Cleanup Scripts**: Require AWS credentials to be configured via AWS CLI (`aws configure`).
 
-3. **Textract Costs**: The main cost driver remains Textract usage. Monitor this in AWS Cost Explorer.
+3. **Textract Costs**: The main cost driver remains Textract usage. Current implementation uses Tables mode with `FeatureTypes=['TABLES']` only ($15.00/1k pages). This is necessary for chess score sheets with table structure and is optimized compared to Forms+Tables mode ($65.00/1k pages). Monitor this in AWS Cost Explorer. First 1,000 pages/month are FREE for 3 months.
 
-4. **No Data Loss**: Be careful with cleanup scripts - deleted files cannot be recovered (unless versioning is enabled).
+4. **Lambda Costs**: Chess validation using chess.js adds minimal processing overhead. Lambda costs remain FREE for development (1M requests/month free). Package size increase (~150KB) is negligible.
 
-5. **Development Only**: These optimizations are designed for development. Adjust lifecycle policies for production as needed.
+5. **No Data Loss**: Be careful with cleanup scripts - deleted files cannot be recovered (unless versioning is enabled).
+
+6. **Development Only**: These optimizations are designed for development. Adjust lifecycle policies for production as needed.
 
 ## 🔗 Related Documentation
 
