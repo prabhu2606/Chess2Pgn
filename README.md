@@ -123,8 +123,8 @@ chess2pgn/
 │       │   └── S3Triggerc8c93dc4/  # Lambda function for Textract OCR
 │       │       ├── src/
 │       │       │   ├── index.js         # Main Lambda handler
-│       │       │   └── chess-validator.js  # Chess move validation & fuzzy matching
-│       │       └── package.json          # Includes chess.js dependency
+│       │       │   └── chess-validator.js  # Chess move validation & hybrid fuzzy matching
+│       │       └── package.json          # Includes chess.js and fast-levenshtein dependencies
 │       └── storage/
 │           └── chessstorage/
 │               └── overrides.ts     # S3 lifecycle policy configuration
@@ -151,6 +151,7 @@ chess2pgn/
 - **OCR**: Amazon Textract (Tables mode with FeatureTypes=['TABLES'] only)
 - **Compute**: AWS Lambda
 - **Chess Validation**: chess.js (JavaScript chess library for move validation)
+- **Fuzzy Matching**: fast-levenshtein (Levenshtein distance algorithm for OCR error correction)
 
 ## Customization
 
@@ -206,11 +207,12 @@ Make sure to set the following environment variables in your deployment:
 3. **Trigger**: S3 upload triggers Lambda function automatically
 4. **OCR**: Lambda calls Amazon Textract `analyzeDocument` with `FeatureTypes=['TABLES']` to extract table structure
 5. **Filtering**: Lambda filters response to only TABLE and CELL blocks (optimized for cost)
-6. **Validation**: Lambda validates and corrects chess moves using fuzzy matching:
+6. **Validation**: Lambda validates and corrects chess moves using hybrid fuzzy matching:
    - Extracts moves from table cells
    - Validates each move using chess.js
-   - Corrects common OCR errors (e.g., "eH" → "e4", "o-o" → "0-0")
-   - Handles illegal moves with fuzzy matching algorithm
+   - **Pattern-based correction**: Fast correction of common OCR errors (e.g., "eH" → "e4", "o-o" → "0-0")
+   - **Levenshtein distance matching**: Finds closest valid move for unknown OCR errors (distance ≤ 2 threshold)
+   - Tracks correction method and statistics
 7. **Storage**: Filtered table data + validated moves are stored in S3 as JSON results
 8. **Retrieval**: Frontend polls API to get processing results
 9. **Parsing**: Parser uses validated/corrected moves from results
@@ -226,15 +228,21 @@ The Lambda function is optimized for cost by:
 
 ### OCR Error Correction
 
-The Lambda function includes intelligent chess move validation and error correction:
+The Lambda function includes intelligent chess move validation using a **hybrid fuzzy matching approach**:
+
 - **Chess Validation**: Uses chess.js to validate move legality
-- **Fuzzy Matching**: Automatically corrects common OCR errors:
-  - `eH` → `e4` (H mistaken for 4)
-  - `eb` → `e6` (b mistaken for 6)
-  - `cl` → `c1` (l mistaken for 1)
-  - `o-o` → `0-0` (castling notation)
-  - And many more common OCR confusions
-- **Error Handling**: Tracks original moves, corrections, and validation statistics
+- **Hybrid Fuzzy Matching** (two-stage approach):
+  1. **Pattern-Based Matching** (fast, handles known OCR errors):
+     - `eH` → `e4` (H mistaken for 4)
+     - `eb` → `e6` (b mistaken for 6)
+     - `cl` → `c1` (l mistaken for 1)
+     - `o-o` → `0-0` (castling notation)
+     - And many more common OCR confusions via character substitution patterns
+  2. **Levenshtein Distance Matching** (flexible, catches unknown errors):
+     - If pattern-based fails, calculates edit distance to all legal moves
+     - Selects closest valid move with distance ≤ 2 (safety threshold)
+     - Handles errors not covered by predefined patterns
+- **Error Handling**: Tracks original moves, corrections, correction method, and validation statistics
 - **Results**: Stores both original OCR moves and corrected moves in results JSON
 
 ## AWS Services Used
@@ -243,11 +251,12 @@ The Lambda function includes intelligent chess move validation and error correct
 - **Amazon S3**: Object storage for images and results (with 7-day lifecycle policy for automatic cleanup)
 - **AWS Lambda**: Serverless function for OCR processing and chess move validation
 - **Amazon Textract**: OCR service with Tables mode (`analyzeDocument` with `FeatureTypes=['TABLES']`)
-- **chess.js**: JavaScript chess library for move validation and fuzzy matching
+- **chess.js**: JavaScript chess library for move validation
+- **fast-levenshtein**: Levenshtein distance algorithm for flexible OCR error correction
 
 ## Cost Optimization
 
-**Important for Paid Plans**: The cost estimates below show actual costs for users on paid AWS plans. Free tier benefits (where applicable) are noted separately. If you're past the free tier period, you'll pay the actual costs listed.
+**Important for Paid Plans**: The cost estimates below show actual costs for users on paid AWS plans. Free tier benefits apply during trial periods (Textract: 3 months, S3: 12 months) and permanently for some services (Lambda). If you're past the free tier trial period, you'll pay the actual costs listed.
 
 This project includes several cost optimization features:
 
@@ -284,19 +293,33 @@ See `scripts/README.md` for detailed usage instructions.
 - Uses Tables mode with **only** TABLES feature ($15.00/1k pages vs $65.00/1k if FORMS+QUERIES included)
 - Filters blocks to only TABLE/CELL types (reduces data transfer and storage)
 - Processes only structured table data, ignoring headers/metadata
-- **Free Tier**: First 1,000 pages/month are FREE for first 3 months (new AWS accounts only)
+- **Free Tier**: 100 pages/month FREE for first 3 months (trial period, applies to all AWS accounts)
 - **Paid Plan**: All pages are charged at $15.00 per 1,000 pages
 
 ### Lambda Cost Optimization
-- Chess validation using chess.js adds minimal processing overhead (~100-500ms per document)
+- Chess validation using chess.js and fast-levenshtein adds minimal processing overhead (~100-500ms per document)
 - **Free Tier**: First 1M requests/month are FREE (permanent free tier, not time-limited)
 - **Paid Plan**: If exceeding 1M requests, costs are ~$0.20 per 1M requests after free tier
-- Package size increase from chess.js (~150KB) is negligible
+- Package size increase from chess.js (~150KB) and fast-levenshtein (~10KB) is negligible
 - **Typical Development**: Usually within free tier limits, so no Lambda costs
 
-### Estimated Monthly Costs (Paid Plan)
+### Free Tier Monitoring
 
-**Note on Free Tier**: Free tier benefits apply only to new AWS accounts. If you're on a paid plan (past free tier period), you'll pay the actual costs listed below.
+You can monitor your Free Tier usage in the AWS Console:
+
+1. Go to **AWS Console** → **Billing and Cost Management** → **Free Tier**
+2. View your current usage for each service
+3. Check usage percentages to see how close you are to free tier limits
+4. Monitor forecasted usage to plan ahead
+
+**Example Free Tier Limits**:
+- **Textract**: 100 pages/month (trial period: first 3 months)
+- **Lambda**: 1M requests/month (permanent free tier)
+- **S3**: 5 GB storage (trial period: first 12 months)
+
+### Estimated Monthly Costs (After Free Tier)
+
+**Note on Free Tier**: Free tier benefits apply during trial periods (Textract: 3 months, S3: 12 months) and permanently for some services (Lambda). The costs below apply after free tier limits are exceeded. Check your Free Tier usage in AWS Console to see your current status.
 
 #### Light Usage (100 pages/month):
 - **Textract**: ~$1.50 (100 pages @ $0.015/page)
@@ -319,10 +342,10 @@ See `scripts/README.md` for detailed usage instructions.
 - **Lambda**: FREE (still within free tier)
 - **Total**: **~$75.50/month**
 
-#### Free Tier Benefits (New AWS Accounts Only):
-- **Textract**: First 1,000 pages/month FREE for first 3 months
-- **S3**: 5 GB storage FREE for first 12 months
-- **Lambda**: 1M requests/month FREE (permanent, not time-limited)
+#### Free Tier Benefits:
+- **Textract**: 100 pages/month FREE for first 3 months (trial period, applies to all AWS accounts)
+- **S3**: 5 GB storage FREE for first 12 months (trial period)
+- **Lambda**: 1M requests/month FREE (permanent free tier, not time-limited)
 
 **Main Cost Driver**: Textract at $15.00 per 1,000 pages. All other services typically remain within free tier for development usage.
 
@@ -341,12 +364,11 @@ This application includes intelligent error correction:
 ### How It Works
 
 1. **Move Extraction**: Lambda extracts moves from table cells after OCR processing
-2. **Validation**: Each move is validated using chess.js to ensure it's legal
-3. **Fuzzy Matching**: If a move is invalid, the system generates candidate moves by:
-   - Substituting common OCR confusion characters (H→4, b→6, l→1, o→0)
-   - Testing each candidate for validity
-   - Selecting the first valid move found
-4. **Results Storage**: Both original and corrected moves are stored in results JSON
+2. **Direct Validation**: Each move is first validated using chess.js as-is
+3. **Hybrid Fuzzy Matching**: If a move is invalid, the system uses a two-stage approach:
+   - **Stage 1 - Pattern-Based**: Generates candidate moves by substituting common OCR confusion characters (H→4, b→6, l→1, o→0). Tests each candidate for validity. Fast and handles known errors.
+   - **Stage 2 - Levenshtein Distance**: If pattern-based fails, calculates edit distance to all legal moves. Selects closest valid move with distance ≤ 2 (safety threshold). Flexible and catches unknown errors.
+4. **Results Storage**: Both original and corrected moves are stored in results JSON, along with correction method (pattern-based or levenshtein) and distance metrics
 
 ### Example Corrections
 

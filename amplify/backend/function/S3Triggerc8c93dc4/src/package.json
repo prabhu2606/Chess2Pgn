@@ -6,6 +6,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "aws-sdk": "^2.1692.0",
-    "chess.js": "^1.0.0-beta.8"
+    "chess.js": "^1.0.0-beta.8",
+    "fast-levenshtein": "^3.0.0"
   }
 }

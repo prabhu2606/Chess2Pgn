@@ -1,8 +1,11 @@
 const { Chess } = require('chess.js');
+const levenshtein = require('fast-levenshtein');
 
 /**
  * Chess Validator Module
- * Validates and corrects OCR errors in chess moves using fuzzy matching
+ * Validates and corrects OCR errors in chess moves using hybrid fuzzy matching:
+ * 1. Pattern-based substitutions (fast, handles common OCR errors)
+ * 2. Levenshtein distance matching (flexible, catches unknown errors)
  */
 
 /**
@@ -96,17 +99,21 @@ function validateMove(board, moveText) {
 }
 
 /**
- * Find valid move using fuzzy matching
- * Generates candidate moves and tries each until finding a valid one
+ * Find valid move using hybrid fuzzy matching
+ * Strategy: 
+ * 1. First try pattern-based substitutions (fast, handles common OCR errors)
+ * 2. If that fails, use Levenshtein distance to find closest legal move
+ * 3. Only accept corrections with distance <= 2 (threshold for safety)
+ * 
  * @param {Chess} board - Chess board instance
  * @param {string} invalidMove - Invalid move from OCR
- * @returns {Object} { valid: boolean, move: string, corrected: boolean, original: string }
+ * @returns {Object} { valid: boolean, move: string, corrected: boolean, original: string, method?: string, distance?: number }
  */
 function fuzzyMatchMove(board, invalidMove) {
   const originalMove = invalidMove;
   const moveNotation = extractMoveNotation(invalidMove);
   
-  // First try direct validation
+  // Step 1: Try direct validation first
   const directResult = validateMove(board, moveNotation);
   if (directResult.valid) {
     return {
@@ -117,10 +124,9 @@ function fuzzyMatchMove(board, invalidMove) {
     };
   }
   
-  // Generate fuzzy match candidates
+  // Step 2: Try pattern-based substitutions (fast, handles known OCR errors)
   const candidates = generateFuzzyMatches(moveNotation);
   
-  // Try each candidate move
   for (const candidate of candidates) {
     if (candidate === moveNotation) continue; // Already tried
     
@@ -131,7 +137,7 @@ function fuzzyMatchMove(board, invalidMove) {
       
       const move = testBoard.move(candidate);
       if (move) {
-        // Found valid move! Apply it to the original board
+        // Found valid move via pattern matching! Apply it to the original board
         board.move(candidate);
         
         return {
@@ -139,7 +145,8 @@ function fuzzyMatchMove(board, invalidMove) {
           move: candidate,
           corrected: true,
           original: originalMove,
-          correction: `${moveNotation} → ${candidate}`
+          correction: `${moveNotation} → ${candidate}`,
+          method: 'pattern-based'
         };
       }
     } catch (error) {
@@ -148,7 +155,67 @@ function fuzzyMatchMove(board, invalidMove) {
     }
   }
   
-  // No valid move found after fuzzy matching
+  // Step 3: Pattern-based failed, try Levenshtein distance matching
+  // Get all legal moves for current position
+  const legalMoves = board.moves();
+  
+  if (legalMoves.length === 0) {
+    // No legal moves available (checkmate/stalemate)
+    return {
+      valid: false,
+      move: moveNotation,
+      corrected: false,
+      original: originalMove,
+      error: 'No legal moves available'
+    };
+  }
+  
+  // Find closest legal move using Levenshtein distance
+  let bestMatch = null;
+  let lowestDistance = 99;
+  
+  // Threshold: Only accept if 1 or 2 characters are wrong
+  // e.g. "eH" (dist 1 to "e4") is good. "QxH7" (dist 3) is too risky.
+  const MAX_DISTANCE_THRESHOLD = 2;
+  
+  for (const validMove of legalMoves) {
+    const dist = levenshtein.get(moveNotation, validMove);
+    
+    // Check if this is the best match within threshold
+    if (dist < lowestDistance && dist <= MAX_DISTANCE_THRESHOLD) {
+      lowestDistance = dist;
+      bestMatch = validMove;
+    }
+  }
+  
+  // Step 4: Apply the best Levenshtein match if found
+  if (bestMatch) {
+    try {
+      // Create a new board instance for testing
+      const testBoard = new Chess();
+      testBoard.loadPgn(board.pgn() || '');
+      
+      const move = testBoard.move(bestMatch);
+      if (move) {
+        // Found valid move via Levenshtein! Apply it to the original board
+        board.move(bestMatch);
+        
+        return {
+          valid: true,
+          move: bestMatch,
+          corrected: true,
+          original: originalMove,
+          correction: `${moveNotation} → ${bestMatch}`,
+          method: 'levenshtein',
+          distance: lowestDistance
+        };
+      }
+    } catch (error) {
+      // Fall through to failure case
+    }
+  }
+  
+  // No valid move found after both pattern-based and Levenshtein matching
   return {
     valid: false,
     move: moveNotation,
