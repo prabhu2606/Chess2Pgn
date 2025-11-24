@@ -18,7 +18,7 @@
       "function": {
         "S3Triggerc8c93dc4": {
           "deploymentBucketName": "amplify-chess2pgn-dev-11eb0-deployment",
-          "s3Key": "amplify-builds/S3Triggerc8c93dc4-666d3655674939516b48-build.zip"
+          "s3Key": "amplify-builds/S3Triggerc8c93dc4-7666784f7a7963663061-build.zip"
         }
       },
       "storage": {

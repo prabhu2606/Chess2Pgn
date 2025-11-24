@@ -25,39 +25,71 @@ function formatMove(move: string): string {
 
 /**
  * Convert moves array to PGN move text
+ * Handles two formats:
+ * 1. Moves with numbers: ["1. e4 e5", "2. Nf3 Nc6"]
+ * 2. Raw moves: ["e4", "e5", "Nf3", "Nc6"] (from Lambda validated moves)
  */
 function formatMoves(moves: string[]): string {
   if (moves.length === 0) {
     return '*'
   }
 
-  const formattedMoves: string[] = []
-  let moveNumber = 1
+  // Check if moves have move numbers (format 1) or are raw (format 2)
+  const hasMoveNumbers = moves.some(move => /^\d+\.?\s*/.test(move))
+  
+  if (hasMoveNumbers) {
+    // Format 1: Moves with numbers (e.g., "1. e4 e5")
+    const formattedMoves: string[] = []
+    let moveNumber = 1
 
-  for (const move of moves) {
-    // Extract move number from the move string
-    const moveNumberMatch = move.match(/^(\d+)\.?\s*/)
-    if (moveNumberMatch) {
-      moveNumber = parseInt(moveNumberMatch[1], 10)
+    for (const move of moves) {
+      // Extract move number from the move string
+      const moveNumberMatch = move.match(/^(\d+)\.?\s*/)
+      if (moveNumberMatch) {
+        moveNumber = parseInt(moveNumberMatch[1], 10)
+      }
+
+      // Remove move number prefix
+      const moveText = move.replace(/^\d+\.?\s*/, '').trim()
+      
+      // Split into white and black moves
+      const parts = moveText.split(/\s+/)
+      
+      if (parts.length >= 2) {
+        // Both white and black moves
+        formattedMoves.push(`${moveNumber}. ${parts[0]} ${parts[1]}`)
+        moveNumber++
+      } else if (parts.length === 1) {
+        // Only white move (last move of game)
+        formattedMoves.push(`${moveNumber}. ${parts[0]}`)
+      }
     }
 
-    // Remove move number prefix
-    const moveText = move.replace(/^\d+\.?\s*/, '').trim()
-    
-    // Split into white and black moves
-    const parts = moveText.split(/\s+/)
-    
-    if (parts.length >= 2) {
-      // Both white and black moves
-      formattedMoves.push(`${moveNumber}. ${parts[0]} ${parts[1]}`)
-      moveNumber++
-    } else if (parts.length === 1) {
-      // Only white move (last move of game)
-      formattedMoves.push(`${moveNumber}. ${parts[0]}`)
+    return formattedMoves.join(' ')
+  } else {
+    // Format 2: Raw moves (e.g., ["e4", "e5", "Nf3", "Nc6"])
+    // Pair them into white/black moves
+    const formattedMoves: string[] = []
+    let moveNumber = 1
+
+    for (let i = 0; i < moves.length; i += 2) {
+      const whiteMove = moves[i]?.trim()
+      const blackMove = moves[i + 1]?.trim()
+      
+      if (whiteMove) {
+        if (blackMove) {
+          // Both white and black moves
+          formattedMoves.push(`${moveNumber}. ${whiteMove} ${blackMove}`)
+        } else {
+          // Only white move (last move of game)
+          formattedMoves.push(`${moveNumber}. ${whiteMove}`)
+        }
+        moveNumber++
+      }
     }
+
+    return formattedMoves.join(' ')
   }
-
-  return formattedMoves.join(' ')
 }
 
 /**

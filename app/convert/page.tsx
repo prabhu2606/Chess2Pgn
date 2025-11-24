@@ -88,11 +88,11 @@ export default function ConvertPage() {
     }
   }
 
-  const pollForResults = async (key: string, maxAttempts = 40) => {
+  const pollForResults = async (key: string, maxAttempts = 90) => {
     console.log('🔄 Starting to poll for results:', { key, maxAttempts })
     
-    // Set a hard timeout of 60 seconds total
-    const hardTimeout = 60000 // 60 seconds
+    // Set a hard timeout of 200 seconds total (Lambda timeout is 180s, add buffer)
+    const hardTimeout = 200000 // 200 seconds
     const startTime = Date.now()
     
     const timeoutId = setTimeout(() => {
@@ -108,7 +108,7 @@ export default function ConvertPage() {
           '1. Lambda function not triggered - Check if the S3 trigger is configured\n' +
           '2. Lambda function failing - Check CloudWatch logs for errors\n' +
           '3. Missing permissions - Lambda needs Textract and S3 permissions\n' +
-          '4. Lambda timeout - Check Lambda function timeout settings (should be 30s)\n\n' +
+          '4. Lambda timeout - Check Lambda function timeout settings (should be 180s)\n\n' +
           'To debug:\n' +
           '1. Check CloudWatch logs for Lambda function: ' + 
           'AWS Console → Lambda → Your function → Logs\n' +
@@ -157,14 +157,118 @@ export default function ConvertPage() {
               hasBlocks: !!results.Blocks,
               hasblocks: !!results.blocks,
               blockCount: results.Blocks?.length || results.blocks?.length || 0,
+              hasChessValidation: !!results.chessValidation,
+              hasCorrectedMoves: !!(results.chessValidation?.correctedMoves?.length),
+              correctedMovesCount: results.chessValidation?.correctedMoves?.length || 0,
+              resultKeys: Object.keys(results)
             })
             
-            // Process the results
-            const textractResponse = {
-              Blocks: results.Blocks || results.blocks || [],
+            // Debug: Log sample blocks to see what we're working with
+            const blocks = results.Blocks || results.blocks || [];
+            if (blocks.length > 0) {
+              const sampleBlocks = blocks.slice(0, 5);
+              console.log('📋 Sample blocks:', sampleBlocks.map((b: any) => ({
+                type: b.BlockType,
+                text: b.Text?.substring(0, 50),
+                rowIndex: b.RowIndex,
+                columnIndex: b.ColumnIndex
+              })));
             }
-            const parsed = parseTextractResponse(textractResponse)
+            
+            // Process the results
+            // Check if we have validated moves from Lambda (preferred)
+            let parsed;
+            if (results.chessValidation && results.chessValidation.correctedMoves && results.chessValidation.correctedMoves.length > 0) {
+              // Use validated moves from Lambda
+              console.log('✅ Using validated moves from Lambda:', {
+                total: results.chessValidation.correctedMoves.length,
+                valid: results.chessValidation.stats?.valid || 0,
+                corrected: results.chessValidation.stats?.corrected || 0,
+                invalid: results.chessValidation.stats?.invalid || 0,
+                sampleMoves: results.chessValidation.correctedMoves.slice(0, 10)
+              });
+              
+              // Create parsed game with validated moves
+              const textractResponse = {
+                Blocks: results.Blocks || results.blocks || [],
+              };
+              const baseParsed = parseTextractResponse(textractResponse);
+              
+              // Replace moves with validated ones
+              parsed = {
+                ...baseParsed,
+                moves: results.chessValidation.correctedMoves
+              };
+            } else {
+              // Fallback to parsing blocks
+              console.log('⚠️ No validated moves found, parsing blocks...', {
+                hasBlocks: blocks.length > 0,
+                blockTypes: [...new Set(blocks.map((b: any) => b.BlockType))],
+                hasTableStructure: blocks.some((b: any) => b.BlockType === 'TABLE' || b.BlockType === 'CELL')
+              });
+              const textractResponse = {
+                Blocks: results.Blocks || results.blocks || [],
+              };
+              parsed = parseTextractResponse(textractResponse);
+              
+              // If still no moves, try to extract from raw text
+              if (parsed.moves.length === 0 && parsed.rawText) {
+                console.log('⚠️ No moves extracted from blocks, trying raw text extraction...', {
+                  rawTextLength: parsed.rawText.length,
+                  rawTextSample: parsed.rawText.substring(0, 200)
+                });
+                // Try extracting moves from raw text as last resort
+                const textMoves = parsed.rawText.match(/\b([a-h][1-8]|O-O|O-O-O|[NBRQK][a-h]?[1-8]?x?[a-h][1-8])\b/g) || [];
+                if (textMoves.length > 0) {
+                  console.log('✅ Found moves in raw text:', textMoves.slice(0, 10));
+                  parsed.moves = textMoves;
+                }
+              }
+            }
+            
+            console.log('📊 Parsed game:', {
+              movesCount: parsed.moves.length,
+              moves: parsed.moves.slice(0, 10),
+              hasBlocks: blocks.length > 0,
+              blockCount: blocks.length,
+              rawTextLength: parsed.rawText?.length || 0
+            });
+            
+            // Warn if no moves found
+            if (parsed.moves.length === 0) {
+              console.error('❌ No moves extracted!', {
+                hasBlocks: blocks.length > 0,
+                hasChessValidation: !!results.chessValidation,
+                blockTypes: [...new Set(blocks.map((b: any) => b.BlockType))],
+                rawText: parsed.rawText?.substring(0, 500),
+                sampleCells: blocks.filter((b: any) => b.BlockType === 'CELL').slice(0, 10).map((b: any) => ({
+                  text: b.Text,
+                  row: b.RowIndex,
+                  col: b.ColumnIndex
+                }))
+              });
+            } else {
+              console.log('✅ Moves extracted successfully!', {
+                totalMoves: parsed.moves.length,
+                first10Moves: parsed.moves.slice(0, 10),
+                last10Moves: parsed.moves.slice(-10)
+              });
+            }
+            
+            console.log('🔄 Converting to PGN with:', {
+              movesCount: parsed.moves.length,
+              moves: parsed.moves.slice(0, 20),
+              hasMetadata: !!parsed.metadata,
+              rawTextLength: parsed.rawText?.length || 0
+            });
+            
             const pgn = convertToPGN(parsed)
+            
+            console.log('📄 PGN generated:', {
+              pgnLength: pgn.length,
+              pgnPreview: pgn.substring(0, 200),
+              hasMoves: !pgn.includes('\n*\n') && pgn.length > 50
+            });
 
             clearTimeout(timeoutId)
             setExtractedText(parsed.rawText)
@@ -300,7 +404,7 @@ export default function ConvertPage() {
           '1. Lambda function not triggered - Check if the S3 trigger is configured\n' +
           '2. Lambda function failing - Check CloudWatch logs for errors\n' +
           '3. Missing permissions - Lambda needs Textract and S3 permissions\n' +
-          '4. Lambda timeout - Check Lambda function timeout settings (should be 30s)\n\n' +
+          '4. Lambda timeout - Check Lambda function timeout settings (should be 180s)\n\n' +
           'To debug:\n' +
           '1. Check CloudWatch logs for Lambda function: ' + 
           'AWS Console → Lambda → Your function → Logs\n' +

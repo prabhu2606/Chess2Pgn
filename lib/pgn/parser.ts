@@ -127,23 +127,73 @@ export function extractMovesFromTable(response: TextractResponse): string[] {
     }
 
     // Extract move notation from cells in this row
-    // Move notation pattern: matches chess moves like "1. e4 e5", "1.e4", etc.
-    const movePattern = /(\d+\.?\s*[a-h1-8NBRQKx=+#O-]+\s*[a-h1-8NBRQKx=+#O-]*)/gi
-    const rowMatches = rowText.match(movePattern)
+    // Try multiple patterns to catch different formats:
+    // 1. With move numbers: "1. e4 e5", "1.e4 e5"
+    // 2. Without move numbers: "e4", "e5", "Nf3"
+    // 3. Castling: "O-O", "O-O-O", "0-0", "0-0-0"
+    
+    // Pattern 1: Moves with numbers (e.g., "1. e4 e5")
+    const movePatternWithNumber = /(\d+\.?\s*[a-h1-8NBRQKx=+#O-]+\s*[a-h1-8NBRQKx=+#O-]*)/gi
+    // Pattern 2: Standalone moves without numbers - more comprehensive pattern
+    // Matches: "e4", "Nf3", "O-O", "Qe2", "fxe6", "Rxf7", "dxc3", "Kh8", etc.
+    const movePatternStandalone = /\b([a-h][1-8](?:x[a-h][1-8])?[+#=]?|O-O(?:-O)?|0-0(?:-0)?|[NBRQK][a-h1-8]?x?[a-h][1-8](?:x[a-h][1-8])?[+#=]?|[a-h]x[a-h][1-8][+#=]?)\b/gi
+    
+    const rowMatches = rowText.match(movePatternWithNumber)
     
     if (rowMatches) {
-      moves.push(...rowMatches.map(match => match.trim()))
-    } else {
-      // If no move pattern found, try each cell individually
-      rowCells.forEach(cell => {
-        const cellText = (cell.Text || '').trim()
-        if (cellText && !isHeaderCell(cellText)) {
-          const cellMatches = cellText.match(movePattern)
-          if (cellMatches) {
-            moves.push(...cellMatches.map(match => match.trim()))
-          }
-        }
+      // Extract moves from numbered format
+      rowMatches.forEach(match => {
+        const cleaned = match.replace(/^\d+\.?\s*/, '').trim()
+        const parts = cleaned.split(/\s+/).filter(p => p.length > 0)
+        moves.push(...parts)
       })
+    } else {
+      // Try standalone move pattern (no move numbers) on row text first
+      const standaloneMatches = rowText.match(movePatternStandalone)
+      if (standaloneMatches && standaloneMatches.length > 0) {
+        moves.push(...standaloneMatches.map(match => match.trim()))
+      } else {
+        // If no pattern found in row text, try each cell individually
+        // This handles cases where moves are in separate columns (move number, white, black)
+        rowCells.forEach(cell => {
+          const cellText = (cell.Text || '').trim()
+          if (cellText && !isHeaderCell(cellText)) {
+            // Skip if it's just a move number (e.g., "23", "24")
+            if (/^\d+$/.test(cellText)) {
+              return // Skip move number cells
+            }
+            
+            // Try numbered pattern first
+            const cellMatchesWithNumber = cellText.match(movePatternWithNumber)
+            if (cellMatchesWithNumber) {
+              cellMatchesWithNumber.forEach(match => {
+                const cleaned = match.replace(/^\d+\.?\s*/, '').trim()
+                const parts = cleaned.split(/\s+/).filter(p => p.length > 0)
+                moves.push(...parts)
+              })
+            } else {
+              // Try standalone pattern - this should catch moves like "Qe2", "fxe6", "Rxf7"
+              const cellMatchesStandalone = cellText.match(movePatternStandalone)
+              if (cellMatchesStandalone && cellMatchesStandalone.length > 0) {
+                // Filter out false positives (like single digits, etc.)
+                const validMoves = cellMatchesStandalone.filter(m => {
+                  const trimmed = m.trim()
+                  // Must be a valid chess move pattern
+                  return trimmed.length >= 2 && (
+                    /^[a-h][1-8]/.test(trimmed) || // e4, e5, etc.
+                    /^[NBRQK]/.test(trimmed) || // Nf3, Bb5, etc.
+                    /^O-O/.test(trimmed) || // Castling
+                    /^[a-h]x/.test(trimmed) // Captures like exd5
+                  )
+                })
+                if (validMoves.length > 0) {
+                  moves.push(...validMoves.map(match => match.trim()))
+                }
+              }
+            }
+          }
+        })
+      }
     }
   }
 

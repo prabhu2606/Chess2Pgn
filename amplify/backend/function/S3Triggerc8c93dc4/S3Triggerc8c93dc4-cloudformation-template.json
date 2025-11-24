@@ -63,7 +63,7 @@
           ]
         },
         "Runtime": "nodejs22.x",
-        "Timeout": 30,
+        "Timeout": 180,
         "MemorySize": 512,
         "Code": {
           "S3Bucket": {
@@ -164,7 +164,7 @@
             {
               "Effect": "Allow",
               "Action": [
-                "textract:DetectDocumentText"
+                "textract:AnalyzeDocument"
               ],
               "Resource": "*"
             }

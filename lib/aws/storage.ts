@@ -417,22 +417,58 @@ export async function getResults(key: string): Promise<any> {
       ensureStorageConfigured()
     }
     
+    // Lambda saves to 'public/results/...' to match Amplify Storage behavior
+    // Try multiple paths to handle different Amplify Storage behaviors
     const resultsKey = `results/${key}.json`
-    console.log('🔍 Looking for results at:', resultsKey)
+    const resultsKeyWithPublic = `public/results/${key}.json`
     
-    // CRITICAL: Use level: 'public' for guest access, same as upload
-    // This ensures Storage.get() can access the file with guest credentials
-    const url = await Storage.get(resultsKey, {
-      expires: 3600,
-      level: 'public', // CRITICAL: Must use 'public' for guest access
+    console.log('🔍 Looking for results at:', { 
+      withoutPublic: resultsKey,
+      withPublic: resultsKeyWithPublic 
     })
+    
+    let url: string;
+    let lastError: any;
+    
+    // Try 1: Storage.get() with level: 'public' (Amplify adds 'public/' prefix automatically)
+    try {
+      url = await Storage.get(resultsKey, {
+        expires: 3600,
+        level: 'public', // CRITICAL: Must use 'public' for guest access
+      }) as string;
+      console.log('✅ Got URL from Storage.get (without public/):', url);
+    } catch (error1: any) {
+      console.log('⚠️ First attempt failed:', error1.message);
+      lastError = error1;
+      
+      // Try 2: Storage.get() with explicit 'public/' in key
+      try {
+        url = await Storage.get(resultsKeyWithPublic, {
+          expires: 3600,
+          level: 'public',
+        }) as string;
+        console.log('✅ Got URL from Storage.get (with public/):', url);
+      } catch (error2: any) {
+        console.log('⚠️ Second attempt failed:', error2.message);
+        lastError = error2;
+        
+        // Try 3: Direct S3 URL (bypass Amplify Storage)
+        const { bucket } = getStorageConfig();
+        const region = process.env.NEXT_PUBLIC_AWS_REGION || DEFAULT_REGION;
+        url = `https://${bucket}.s3.${region}.amazonaws.com/${resultsKeyWithPublic}`;
+        console.log('🔍 Trying direct S3 URL:', url);
+      }
+    }
 
     const response = await fetch(url as string)
     if (!response.ok) {
       console.warn('⚠️ Results file not found:', {
         key: resultsKey,
+        keyWithPublic: resultsKeyWithPublic,
+        url,
         status: response.status,
         statusText: response.statusText,
+        lastError: lastError?.message,
       })
       throw new Error('Results not found')
     }
@@ -446,7 +482,13 @@ export async function getResults(key: string): Promise<any> {
     
     return data
   } catch (error: any) {
-    console.error('❌ Error getting results:', error)
+    console.error('❌ Error getting results:', {
+      error: error.message,
+      key,
+      resultsKey: `results/${key}.json`,
+      resultsKeyWithPublic: `public/results/${key}.json`,
+      errorDetails: error,
+    })
     
     // Check for credential-related errors
     if (error.message?.includes('No credentials') || 
@@ -459,7 +501,8 @@ export async function getResults(key: string): Promise<any> {
     
     // Check if it's a "not found" error specifically
     if (error.message?.includes('not found') || error.message?.includes('404')) {
-      throw new Error('Results not found')
+      // Provide more context about where we're looking
+      throw new Error(`Results not found. Checked paths: results/${key}.json and public/results/${key}.json. Verify Lambda completed successfully in CloudWatch logs.`)
     }
     
     throw new Error(`Failed to get results: ${error.message || 'Unknown error'}`)

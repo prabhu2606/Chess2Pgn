@@ -30,37 +30,57 @@ exports.handler = async (event) => {
     }
 
     const bucket = s3Record.bucket.name;
-    const key = decodeURIComponent(s3Record.object.key.replace(/\+/g, ' '));
+    const originalKey = decodeURIComponent(s3Record.object.key.replace(/\+/g, ' '));
     
-    console.log('📄 Processing document:', { bucket, key });
+    console.log('📄 Processing document:', { bucket, originalKey });
 
     // Skip processing results files to avoid infinite loops
-    if (key.startsWith('results/')) {
-      console.log('⏭️ Skipping results file:', key);
+    if (originalKey.startsWith('results/') || originalKey.startsWith('public/results/')) {
+      console.log('⏭️ Skipping results file:', originalKey);
       return {
         statusCode: 200,
         body: JSON.stringify({ message: 'Skipped results file' })
       };
     }
 
+    // IMPORTANT: Use originalKey for Textract (file is stored with 'public/' prefix in S3)
+    // But normalize key for results path (frontend expects results without 'public/' prefix)
+    const normalizedKey = originalKey.startsWith('public/') 
+      ? originalKey.substring(7) // Remove 'public/' prefix for results path
+      : originalKey;
+    
+    if (originalKey !== normalizedKey) {
+      console.log('📝 Key normalization:', { 
+        original: originalKey, 
+        normalized: normalizedKey,
+        note: 'Using originalKey for Textract, normalizedKey for results path'
+      });
+    }
+
     // Configure Textract parameters - using analyzeDocument with TABLES feature only for cost optimization
+    // CRITICAL: Use originalKey here because the file is stored with 'public/' prefix in S3
     const textractParams = {
       Document: {
         S3Object: {
           Bucket: bucket,
-          Name: key
+          Name: originalKey  // Use original key (with public/ prefix) for Textract
         }
       },
       FeatureTypes: ['TABLES']  // Strictly TABLES only - excludes FORMS/QUERIES to save cost
     };
 
     // Call Textract analyzeDocument API - optimized for table structure extraction
-    console.log('🔍 Starting Textract OCR with TABLES feature...', { bucket, key });
+    console.log('🔍 Starting Textract OCR with TABLES feature...', { bucket, key: originalKey });
     const textractStartTime = Date.now();
     
+    const textractPromise = textract.analyzeDocument(textractParams).promise();
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Textract timeout after 30 seconds')), 30000)
+    );
+
     let textractData;
     try {
-      textractData = await textract.analyzeDocument(textractParams).promise();
+      textractData = await Promise.race([textractPromise, timeoutPromise]);
     } catch (textractError) {
       console.error('❌ Textract API error:', {
         error: textractError.message,
@@ -90,29 +110,96 @@ exports.handler = async (event) => {
       originalBlocksCount
     });
 
-    // Filter blocks to only TABLE and CELL types for cost optimization
-    // This reduces data size and processing overhead by excluding LINE, WORD, PAGE, etc.
-    const filteredBlocks = (textractData.Blocks || []).filter(
-      block => block.BlockType === 'TABLE' || block.BlockType === 'CELL'
+    // CRITICAL: Keep WORD blocks too - CELL blocks may reference them via relationships
+    // Filter blocks to TABLE, CELL, and WORD types
+    // WORD blocks are needed to extract text from CELL blocks that use relationships
+    const allBlocks = textractData.Blocks || [];
+    const blockMap = {}; // Map block Id to block for relationship resolution
+    allBlocks.forEach(block => {
+      if (block.Id) {
+        blockMap[block.Id] = block;
+      }
+    });
+    
+    const filteredBlocks = allBlocks.filter(
+      block => block.BlockType === 'TABLE' || block.BlockType === 'CELL' || block.BlockType === 'WORD'
     );
+
+    // Build text for CELL blocks that don't have direct Text property
+    // Some CELL blocks use Relationships to reference WORD blocks
+    filteredBlocks.forEach(block => {
+      if (block.BlockType === 'CELL' && !block.Text && block.Relationships) {
+        // Extract text from related WORD blocks
+        const wordTexts = [];
+        block.Relationships.forEach(rel => {
+          if (rel.Type === 'CHILD' && rel.Ids) {
+            rel.Ids.forEach(wordId => {
+              const wordBlock = blockMap[wordId];
+              if (wordBlock && wordBlock.BlockType === 'WORD' && wordBlock.Text) {
+                wordTexts.push(wordBlock.Text);
+              }
+            });
+          }
+        });
+        if (wordTexts.length > 0) {
+          block.Text = wordTexts.join(' ').trim();
+        }
+      }
+    });
 
     // Update response to only include filtered table blocks
     textractData.Blocks = filteredBlocks;
     
     const filteredBlocksCount = filteredBlocks.length;
-    console.log(`📊 Block filtering: ${originalBlocksCount} total blocks → ${filteredBlocksCount} table blocks (TABLE/CELL only)`, {
+    const tableBlocks = filteredBlocks.filter(b => b.BlockType === 'TABLE').length;
+    const cellBlocks = filteredBlocks.filter(b => b.BlockType === 'CELL');
+    const wordBlocks = filteredBlocks.filter(b => b.BlockType === 'WORD').length;
+    
+    console.log(`📊 Block filtering: ${originalBlocksCount} total blocks → ${filteredBlocksCount} blocks (TABLE/CELL/WORD)`, {
       originalBlocksCount,
       filteredBlocksCount,
+      tableBlocks,
+      cellBlocks: cellBlocks.length,
+      wordBlocks,
       filteredPercent: originalBlocksCount > 0 ? ((filteredBlocksCount / originalBlocksCount) * 100).toFixed(1) + '%' : '0%'
     });
 
     // Extract, validate, and correct chess moves using fuzzy matching
     console.log('♟️ Starting chess move validation and OCR correction...');
+    const cellsWithText = cellBlocks.filter(b => b.Text && b.Text.trim().length > 0);
+    console.log('📋 Filtered blocks info:', {
+      totalBlocks: filteredBlocks.length,
+      cellBlocks: cellBlocks.length,
+      cellsWithText: cellsWithText.length,
+      tableBlocks: tableBlocks,
+      wordBlocks: wordBlocks,
+      sampleCells: cellsWithText.slice(0, 20).map(b => ({
+        text: b.Text,
+        row: b.RowIndex,
+        col: b.ColumnIndex,
+        confidence: b.Confidence,
+        hasRelationships: !!b.Relationships
+      })),
+      allCellTexts: cellsWithText.map(b => b.Text).filter(t => t && t.trim().length > 0).slice(0, 50),
+      // Debug: Show sample CELL blocks without text
+      cellsWithoutText: cellBlocks.filter(b => !b.Text || !b.Text.trim()).slice(0, 5).map(b => ({
+        id: b.Id,
+        row: b.RowIndex,
+        col: b.ColumnIndex,
+        hasRelationships: !!b.Relationships,
+        relationshipTypes: b.Relationships ? b.Relationships.map(r => r.Type) : []
+      }))
+    });
     const validationStartTime = Date.now();
     
     let validationResult;
     try {
       validationResult = correctOCRErrors(filteredBlocks);
+      
+      console.log('📊 Extracted moves before validation:', {
+        totalMoves: validationResult.originalMoves.length,
+        sampleMoves: validationResult.originalMoves.slice(0, 20)
+      });
       
       const validationDuration = Date.now() - validationStartTime;
       console.log(`✅ Move validation completed in ${validationDuration}ms`, {
@@ -154,18 +241,54 @@ exports.handler = async (event) => {
     };
 
     // Save filtered results to S3 (only TABLE and CELL blocks + validation results)
-    const resultKey = `results/${key}.json`;
+    // IMPORTANT: Use 'public/results/' prefix to match Amplify Storage behavior
+    // When frontend uses Storage.get() with level: 'public', it automatically adds 'public/' prefix
+    // So we need to save with 'public/' prefix so the paths match
+    // Use normalizedKey (without public/) for results path consistency
+    const resultKey = `public/results/${normalizedKey}.json`;
     console.log('💾 Saving results to S3:', { bucket, resultKey });
     
     try {
-      await s3.putObject({
+      const putObjectParams = {
         Bucket: bucket,
         Key: resultKey,
         Body: JSON.stringify(textractData),
         ContentType: 'application/json',
         CacheControl: 'max-age=3600'
-      }).promise();
+      };
+      
+      console.log('💾 Attempting to save results with params:', {
+        bucket,
+        key: resultKey,
+        bodySize: JSON.stringify(textractData).length,
+        contentType: 'application/json'
+      });
+      
+      await s3.putObject(putObjectParams).promise();
       console.log('✅ Results saved successfully to:', resultKey);
+      
+      // Verify the file was actually saved (wait a moment for eventual consistency)
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      try {
+        const headResult = await s3.headObject({
+          Bucket: bucket,
+          Key: resultKey
+        }).promise();
+        console.log('✅ Verified file exists in S3:', {
+          key: resultKey,
+          size: headResult.ContentLength,
+          lastModified: headResult.LastModified,
+          etag: headResult.ETag
+        });
+      } catch (verifyError) {
+        console.error('⚠️ Warning: Could not verify saved file:', {
+          error: verifyError.message,
+          code: verifyError.code,
+          key: resultKey
+        });
+        // Don't throw - file might still be saved but not immediately visible (eventual consistency)
+      }
     } catch (s3Error) {
       console.error('❌ S3 PutObject error:', {
         error: s3Error.message,
