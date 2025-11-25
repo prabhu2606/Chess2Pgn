@@ -1,12 +1,13 @@
 'use client'
 
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
 import Stepper from '@/components/ui/Stepper'
 import { uploadImage, getResults } from '@/lib/aws/storage'
 import { parseTextractResponse } from '@/lib/pgn/parser'
 import { convertToPGN, downloadPGN } from '@/lib/pgn/converter'
+import { Chess } from 'chess.js'
 
 const steps = [
   { label: 'Upload', number: 1 },
@@ -15,7 +16,32 @@ const steps = [
   { label: 'Done', number: 4 },
 ]
 
-type ProcessingStatus = 'idle' | 'uploading' | 'processing' | 'completed' | 'error'
+type ProcessingStatus = 'idle' | 'uploading' | 'processing' | 'completed' | 'validated' | 'error'
+
+type MoveData = {
+  moveNumber: number
+  white: string
+  black: string | null
+  whiteValid: boolean
+  blackValid: boolean
+  whiteError: string | null
+  blackError: string | null
+  whiteOriginal?: string
+  blackOriginal?: string
+}
+
+type EditableMove = {
+  moveNumber: number
+  color: 'white' | 'black'
+} | null
+
+type ContextMenuState = {
+  show: boolean
+  x: number
+  y: number
+  moveNumber: number
+  color: 'white' | 'black'
+} | null
 
 export default function ConvertPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -30,6 +56,14 @@ export default function ConvertPage() {
   const [pgnOutput, setPgnOutput] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState(0)
+  
+  // Moves table state
+  const [movesData, setMovesData] = useState<MoveData[]>([])
+  const [invalidMovesCount, setInvalidMovesCount] = useState<number>(0)
+  const [editableMove, setEditableMove] = useState<EditableMove>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
+  const [editedMoveValue, setEditedMoveValue] = useState<string>('')
+  const contextMenuRef = useRef<HTMLDivElement>(null)
 
   // Cleanup polling on unmount or status change
   useEffect(() => {
@@ -48,6 +82,90 @@ export default function ConvertPage() {
   const handleTakePhotoClick = () => {
     cameraInputRef.current?.click()
   }
+
+  // Transform moves array into paired format with validation status
+  const transformMovesToPairs = useCallback((moves: string[], corrections: any[] = []) => {
+    const pairs: MoveData[] = []
+    const correctionMap = new Map<string, { corrected: string | null, error?: string, original: string }>()
+    
+    // Filter out header words and invalid entries
+    const headerWords = ['WHITE', 'BLACK', 'MOVE', 'ROUND', 'RESULT', 'DATE', 'EVENT', 'TOURNAMENT', 'SITE', 'PLAYER']
+    const filteredMoves = moves.filter(move => {
+      const upperMove = move.trim().toUpperCase()
+      // Skip if it's a header word
+      if (headerWords.includes(upperMove)) return false
+      // Skip if it's too short or doesn't look like a move
+      if (move.trim().length < 2) return false
+      // Skip if it's just a number
+      if (/^\d+$/.test(move.trim())) return false
+      return true
+    })
+    
+    // Build correction map for quick lookup - map both original and corrected moves
+    corrections.forEach(correction => {
+      correctionMap.set(correction.original, {
+        corrected: correction.corrected,
+        error: correction.error,
+        original: correction.original
+      })
+      // Also map the corrected move back to the original for lookup
+      if (correction.corrected) {
+        correctionMap.set(correction.corrected, {
+          corrected: correction.corrected,
+          error: correction.error,
+          original: correction.original
+        })
+      }
+    })
+    
+    // Pair moves: even index = white, odd index = black
+    for (let i = 0; i < filteredMoves.length; i += 2) {
+      const whiteMove = filteredMoves[i] || ''
+      const blackMove = i + 1 < filteredMoves.length ? filteredMoves[i + 1] : null
+      const moveNumber = Math.floor(i / 2) + 1
+      
+      // Check validation status - if move is in corrections, check if it has error
+      const whiteCorrection = correctionMap.get(whiteMove)
+      const blackCorrection = blackMove ? correctionMap.get(blackMove) : null
+      
+      // A move is valid if:
+      // 1. It's not in corrections (was valid from start), OR
+      // 2. It's in corrections but has no error (was corrected successfully)
+      const whiteValid = !whiteCorrection || !whiteCorrection.error
+      const blackValid = !blackMove || !blackCorrection || !blackCorrection.error
+      
+      pairs.push({
+        moveNumber,
+        white: whiteMove,
+        black: blackMove,
+        whiteValid: whiteValid,
+        blackValid: blackValid,
+        whiteError: whiteCorrection?.error || null,
+        blackError: blackCorrection?.error || null,
+        whiteOriginal: whiteCorrection && whiteCorrection.original !== whiteMove ? whiteCorrection.original : undefined,
+        blackOriginal: blackCorrection && blackCorrection.original !== blackMove ? blackCorrection.original : undefined
+      })
+    }
+    
+    return pairs
+  }, [])
+
+  // Validate move using chess.js
+  const validateMoveOnBoard = useCallback((moveText: string, gameHistory: string[]) => {
+    try {
+      const board = new Chess()
+      // Replay all previous moves
+      for (const move of gameHistory) {
+        const result = board.move(move)
+        if (!result) return { valid: false, error: 'Invalid move in history' }
+      }
+      // Try the new move
+      const result = board.move(moveText)
+      return result ? { valid: true } : { valid: false, error: 'Invalid move' }
+    } catch (err: any) {
+      return { valid: false, error: err.message || 'Invalid move' }
+    }
+  }, [])
 
   const processFile = async (file: File) => {
     try {
@@ -176,28 +294,28 @@ export default function ConvertPage() {
             }
             
             // Process the results
-            // Check if we have validated moves from Lambda (preferred)
+            // Use ORIGINAL moves from OCR (not corrected) for display - user wants to see actual OCR text
             let parsed;
-            if (results.chessValidation && results.chessValidation.correctedMoves && results.chessValidation.correctedMoves.length > 0) {
-              // Use validated moves from Lambda
-              console.log('✅ Using validated moves from Lambda:', {
-                total: results.chessValidation.correctedMoves.length,
+            if (results.chessValidation && results.chessValidation.originalMoves && results.chessValidation.originalMoves.length > 0) {
+              // Use original OCR moves for display
+              console.log('✅ Using original OCR moves from Lambda:', {
+                total: results.chessValidation.originalMoves.length,
                 valid: results.chessValidation.stats?.valid || 0,
                 corrected: results.chessValidation.stats?.corrected || 0,
                 invalid: results.chessValidation.stats?.invalid || 0,
-                sampleMoves: results.chessValidation.correctedMoves.slice(0, 10)
+                sampleMoves: results.chessValidation.originalMoves.slice(0, 10)
               });
               
-              // Create parsed game with validated moves
+              // Create parsed game with original OCR moves
               const textractResponse = {
                 Blocks: results.Blocks || results.blocks || [],
               };
               const baseParsed = parseTextractResponse(textractResponse);
               
-              // Replace moves with validated ones
+              // Use original moves for display (user wants to see actual OCR text)
               parsed = {
                 ...baseParsed,
-                moves: results.chessValidation.correctedMoves
+                moves: results.chessValidation.originalMoves
               };
             } else {
               // Fallback to parsing blocks
@@ -255,27 +373,27 @@ export default function ConvertPage() {
               });
             }
             
-            console.log('🔄 Converting to PGN with:', {
-              movesCount: parsed.moves.length,
-              moves: parsed.moves.slice(0, 20),
-              hasMetadata: !!parsed.metadata,
-              rawTextLength: parsed.rawText?.length || 0
-            });
-            
-            const pgn = convertToPGN(parsed)
-            
-            console.log('📄 PGN generated:', {
-              pgnLength: pgn.length,
-              pgnPreview: pgn.substring(0, 200),
-              hasMoves: !pgn.includes('\n*\n') && pgn.length > 50
-            });
+            // Transform moves into pairs for moves table
+            const corrections = results.chessValidation?.corrections || []
+            const transformedMoves = transformMovesToPairs(parsed.moves, corrections)
+            const invalidCount = transformedMoves.reduce((count, move) => {
+              if (!move.whiteValid) count++
+              if (move.black && !move.blackValid) count++
+              return count
+            }, 0)
+
+            console.log('📊 Moves transformed:', {
+              totalPairs: transformedMoves.length,
+              invalidMoves: invalidCount
+            })
 
             clearTimeout(timeoutId)
             setExtractedText(parsed.rawText)
-            setPgnOutput(pgn)
-            setStatus('completed')
+            setMovesData(transformedMoves)
+            setInvalidMovesCount(invalidCount)
+            setStatus('validated')
             setProgress(100)
-            console.log('✅ Processing complete!')
+            console.log('✅ Processing complete! Moves ready for validation.')
             return
           } catch (resultsError: any) {
             // Check if cancelled
@@ -466,11 +584,159 @@ export default function ConvertPage() {
     if (cameraInputRef.current) {
       cameraInputRef.current.value = ''
     }
+    setMovesData([])
+    setInvalidMovesCount(0)
+    setEditableMove(null)
+    setContextMenu(null)
+    setEditedMoveValue('')
+  }
+
+  // Handle double-click to edit
+  const handleMoveDoubleClick = (moveNumber: number, color: 'white' | 'black') => {
+    const move = movesData.find(m => m.moveNumber === moveNumber)
+    if (!move) return
+    
+    setEditableMove({ moveNumber, color })
+    setEditedMoveValue(color === 'white' ? move.white : (move.black || ''))
+    setContextMenu(null)
+  }
+
+  // Handle right-click for context menu
+  const handleMoveRightClick = (e: React.MouseEvent, moveNumber: number, color: 'white' | 'black') => {
+    e.preventDefault()
+    setContextMenu({
+      show: true,
+      x: e.clientX,
+      y: e.clientY,
+      moveNumber,
+      color
+    })
+    setEditableMove(null)
+  }
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null)
+      }
+    }
+
+    if (contextMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [contextMenu])
+
+  // Handle context menu actions
+  const handleContextMenuAction = (action: 'edit' | 'insertBefore' | 'insertAfter' | 'delete') => {
+    if (!contextMenu) return
+    
+    const { moveNumber, color } = contextMenu
+    
+    if (action === 'edit') {
+      const move = movesData.find(m => m.moveNumber === moveNumber)
+      if (move) {
+        setEditableMove({ moveNumber, color })
+        setEditedMoveValue(color === 'white' ? move.white : (move.black || ''))
+      }
+    } else if (action === 'delete') {
+      // TODO: Implement delete move
+      console.log('Delete move:', moveNumber, color)
+    } else if (action === 'insertBefore' || action === 'insertAfter') {
+      // TODO: Implement insert move
+      console.log('Insert move:', action, moveNumber, color)
+    }
+    
+    setContextMenu(null)
+  }
+
+  // Save edited move
+  const handleSaveMove = (moveNumber: number, color: 'white' | 'black') => {
+    const newValue = editedMoveValue.trim()
+    if (!newValue) return
+
+    const moveIndex = movesData.findIndex(m => m.moveNumber === moveNumber)
+    if (moveIndex === -1) return
+
+    const gameHistory: string[] = []
+    for (let i = 0; i < moveIndex; i++) {
+      const m = movesData[i]
+      gameHistory.push(m.white)
+      if (m.black) gameHistory.push(m.black)
+    }
+    
+    if (color === 'black') {
+      gameHistory.push(movesData[moveIndex].white)
+    }
+
+    const validation = validateMoveOnBoard(newValue, gameHistory)
+    
+    const updatedMoves = [...movesData]
+    const moveToUpdate = updatedMoves[moveIndex]
+    
+    if (color === 'white') {
+      updatedMoves[moveIndex] = {
+        ...moveToUpdate,
+        white: newValue,
+        whiteValid: validation.valid,
+        whiteError: validation.valid ? null : (validation.error || 'Invalid move')
+      }
+    } else {
+      updatedMoves[moveIndex] = {
+        ...moveToUpdate,
+        black: newValue,
+        blackValid: validation.valid,
+        blackError: validation.valid ? null : (validation.error || 'Invalid move')
+      }
+    }
+
+    const invalidCount = updatedMoves.reduce((count, move) => {
+      if (!move.whiteValid) count++
+      if (move.black && !move.blackValid) count++
+      return count
+    }, 0)
+
+    setMovesData(updatedMoves)
+    setInvalidMovesCount(invalidCount)
+    setEditableMove(null)
+    setEditedMoveValue('')
+  }
+
+  const handleCancelEdit = () => {
+    setEditableMove(null)
+    setEditedMoveValue('')
+  }
+
+  const handleGeneratePGN = () => {
+    if (invalidMovesCount > 0) {
+      setError('Please fix all invalid moves before generating PGN')
+      return
+    }
+
+    const movesArray: string[] = []
+    movesData.forEach(move => {
+      movesArray.push(move.white)
+      if (move.black) {
+        movesArray.push(move.black)
+      }
+    })
+
+    const parsed = {
+      metadata: {},
+      moves: movesArray,
+      rawText: extractedText,
+      confidence: 100
+    }
+
+    const pgn = convertToPGN(parsed)
+    setPgnOutput(pgn)
+    setStatus('completed')
   }
 
   const activeStep = status === 'idle' || status === 'error' ? 0 : 
                      status === 'uploading' || status === 'processing' ? 1 :
-                     status === 'completed' ? 2 : 0
+                     status === 'validated' || status === 'completed' ? 2 : 0
 
   return (
     <>
@@ -480,16 +746,18 @@ export default function ConvertPage() {
           <div className="container">
             <Stepper steps={steps} activeStep={activeStep} />
             
-            <div className="max-w-[600px] mx-auto mt-12">
+            <div className="max-w-[1400px] mx-auto mt-12 px-4">
               {/* Title Section */}
               <div className="text-center mb-8">
                 <h1 className="text-[clamp(2rem,4vw,2.5rem)] font-bold text-contrast mb-2">
                   {status === 'completed' ? 'Processing Complete' : 
+                   status === 'validated' ? 'Review and Fix Moves' :
                    status === 'processing' || status === 'uploading' ? 'Processing...' :
                    'Upload Your First Page'}
                 </h1>
                 <p className="text-lg text-contrast/60">
                   {status === 'completed' ? 'Review and download your PGN' :
+                   status === 'validated' ? 'Double-click to edit, right-click for more options' :
                    status === 'processing' || status === 'uploading' ? 'Please wait while we process your image' :
                    'One page at a time.'}
                 </p>
@@ -533,8 +801,8 @@ export default function ConvertPage() {
                 </div>
               )}
 
-              {/* Image Preview */}
-              {imagePreview && (
+              {/* Image Preview - Hide when in validated or completed status (shown in side-by-side) */}
+              {imagePreview && status !== 'validated' && status !== 'completed' && (
                 <div className="mb-6">
                   <img
                     src={imagePreview}
@@ -639,21 +907,204 @@ export default function ConvertPage() {
                 </>
               )}
 
-              {/* Results Display */}
-              {status === 'completed' && (
+              {/* Moves Table Display */}
+              {status === 'validated' && (
                 <div className="space-y-6">
+                  {/* Invalid Moves Alert */}
+                  {invalidMovesCount > 0 && (
+                    <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4">
+                      <p className="text-red-800 font-semibold text-lg">
+                        {invalidMovesCount} {invalidMovesCount === 1 ? 'Move needs to be fixed!!' : 'Moves need to be fixed!!'}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Side-by-side Layout: Score Sheet Image and Moves Table */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Score Sheet Image */}
+                    {imagePreview && (
+                      <div className="bg-white border-2 border-primary rounded-xl p-4 overflow-hidden flex flex-col h-[600px]">
+                        <h3 className="text-lg font-semibold text-contrast mb-3">Score Sheet</h3>
+                        <div className="overflow-auto flex-1 border border-gray-200 rounded-lg">
+                          <img
+                            src={imagePreview}
+                            alt="Uploaded score sheet"
+                            className="w-full h-auto"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Moves Table */}
+                    <div className="bg-white border-2 border-primary rounded-xl overflow-hidden flex flex-col h-[600px]">
+                      <div className="p-4 pb-2 border-b border-gray-200">
+                        <h3 className="text-lg font-semibold text-contrast">Moves</h3>
+                        {movesData.length > 10 && (
+                          <p className="text-xs text-gray-500 mt-1">Total: {movesData.length} moves (scroll to view all)</p>
+                        )}
+                      </div>
+                      <div className="overflow-x-auto overflow-y-auto flex-1">
+                        <table className="w-full table-fixed">
+                        <thead>
+                          <tr className="bg-gray-100">
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 border-b border-gray-300 w-20">
+                              Move
+                            </th>
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 border-b border-gray-300">
+                              White
+                            </th>
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 border-b border-gray-300">
+                              Black
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {movesData.map((move) => (
+                            <tr key={move.moveNumber} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 text-sm text-gray-600 border-b border-gray-200">
+                                {move.moveNumber}
+                              </td>
+                              {/* White Move Cell */}
+                              <td className="px-4 py-3 border-b border-gray-200 overflow-hidden">
+                                <div className="min-h-[40px] flex items-center">
+                                  {editableMove?.moveNumber === move.moveNumber && editableMove?.color === 'white' ? (
+                                    <div className="flex items-center gap-2 w-full">
+                                      <input
+                                        type="text"
+                                        value={editedMoveValue}
+                                        onChange={(e) => setEditedMoveValue(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            handleSaveMove(move.moveNumber, 'white')
+                                          } else if (e.key === 'Escape') {
+                                            handleCancelEdit()
+                                          }
+                                        }}
+                                        autoFocus
+                                        className="w-1/2 max-w-[50%] px-2 py-1.5 border border-primary rounded text-sm"
+                                      />
+                                      <button
+                                        onClick={() => handleSaveMove(move.moveNumber, 'white')}
+                                        className="px-2 py-1.5 bg-primary text-white rounded text-xs hover:bg-primary/90 whitespace-nowrap flex-shrink-0"
+                                      >
+                                        ✓
+                                      </button>
+                                      <button
+                                        onClick={handleCancelEdit}
+                                        className="px-2 py-1.5 bg-gray-300 text-gray-700 rounded text-xs hover:bg-gray-400 whitespace-nowrap flex-shrink-0"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className={`flex items-center px-2 py-1.5 rounded cursor-pointer w-full min-h-[40px] ${
+                                        !move.whiteValid ? 'border-2 border-red-500 bg-red-50' : ''
+                                      }`}
+                                      onDoubleClick={() => handleMoveDoubleClick(move.moveNumber, 'white')}
+                                      onContextMenu={(e) => handleMoveRightClick(e, move.moveNumber, 'white')}
+                                    >
+                                      <span className="text-sm">{move.white}</span>
+                                      {move.whiteValid && (
+                                        <span className="text-green-600 font-bold ml-1">✓</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                              {/* Black Move Cell */}
+                              <td className="px-4 py-3 border-b border-gray-200 overflow-hidden">
+                                <div className="min-h-[40px] flex items-center">
+                                  {editableMove?.moveNumber === move.moveNumber && editableMove?.color === 'black' ? (
+                                    <div className="flex items-center gap-2 w-full">
+                                      <input
+                                        type="text"
+                                        value={editedMoveValue}
+                                        onChange={(e) => setEditedMoveValue(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            handleSaveMove(move.moveNumber, 'black')
+                                          } else if (e.key === 'Escape') {
+                                            handleCancelEdit()
+                                          }
+                                        }}
+                                        autoFocus
+                                        className="w-1/2 max-w-[50%] px-2 py-1.5 border border-primary rounded text-sm"
+                                      />
+                                      <button
+                                        onClick={() => handleSaveMove(move.moveNumber, 'black')}
+                                        className="px-2 py-1.5 bg-primary text-white rounded text-xs hover:bg-primary/90 whitespace-nowrap flex-shrink-0"
+                                      >
+                                        ✓
+                                      </button>
+                                      <button
+                                        onClick={handleCancelEdit}
+                                        className="px-2 py-1.5 bg-gray-300 text-gray-700 rounded text-xs hover:bg-gray-400 whitespace-nowrap flex-shrink-0"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className={`flex items-center px-2 py-1.5 rounded w-full min-h-[40px] ${move.black ? 'cursor-pointer' : ''} ${
+                                        move.black && !move.blackValid ? 'border-2 border-red-500 bg-red-50' : ''
+                                      }`}
+                                      onDoubleClick={() => move.black && handleMoveDoubleClick(move.moveNumber, 'black')}
+                                      onContextMenu={(e) => move.black && handleMoveRightClick(e, move.moveNumber, 'black')}
+                                    >
+                                      <span className="text-sm">{move.black || '-'}</span>
+                                      {move.black && move.blackValid && (
+                                        <span className="text-green-600 font-bold ml-1">✓</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  </div>
+
+                  {/* Hint */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <p className="text-blue-800 text-sm">
+                      ⓘ Double-click to edit, right-click for more options
+                    </p>
+                  </div>
+
+                  {/* Continue to PGN Button */}
+                  <button
+                    onClick={handleGeneratePGN}
+                    disabled={invalidMovesCount > 0}
+                    className={`w-full py-3 px-4 rounded-xl font-semibold transition-colors ${
+                      invalidMovesCount > 0
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-primary text-white hover:bg-primary/90'
+                    }`}
+                  >
+                    Continue to PGN
+                  </button>
+
                   {/* Extracted Text */}
                   {extractedText && (
                     <div className="bg-accent1 border border-primary rounded-xl p-6">
                       <h3 className="text-lg font-semibold text-contrast mb-3">
                         Extracted Text
                       </h3>
-                      <p className="text-sm text-contrast/80 whitespace-pre-wrap">
+                      <p className="text-sm text-contrast/80 whitespace-pre-wrap max-h-64 overflow-y-auto">
                         {extractedText}
                       </p>
                     </div>
                   )}
+                </div>
+              )}
 
+              {/* Results Display */}
+              {status === 'completed' && (
+                <div className="space-y-6">
                   {/* PGN Output */}
                   {pgnOutput && (
                     <div className="bg-white border-2 border-primary rounded-xl p-6">
@@ -709,6 +1160,56 @@ export default function ConvertPage() {
         </section>
       </main>
       <Footer />
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="fixed bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
+          style={{
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            minWidth: '200px'
+          }}
+        >
+          <button
+            onClick={() => handleContextMenuAction('edit')}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+            Edit
+          </button>
+          <button
+            onClick={() => handleContextMenuAction('insertBefore')}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+            </svg>
+            Insert before this move
+          </button>
+          <button
+            onClick={() => handleContextMenuAction('insertAfter')}
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+            </svg>
+            Insert after this move
+          </button>
+          <button
+            onClick={() => handleContextMenuAction('delete')}
+            className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            Delete
+          </button>
+        </div>
+      )}
     </>
   )
 }
